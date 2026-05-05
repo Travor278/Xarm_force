@@ -3,45 +3,46 @@
 Random Motion Test with Torque Monitoring
 ==========================================
 Moves xArm6 slowly within a 15cm sphere around home position while
-recording torque monitor data. Used to evaluate force estimation quality
-across varied poses.
+recording full force estimation data for validation.
 
 Usage:
-  python scripts/random_motion_test.py --duration 180
+  python scripts/random_motion_test.py --duration 120
 """
 
 import argparse
 import csv
 import os
 import signal
-import sys
 import threading
 import time
 from datetime import datetime
 
 import numpy as np
 
-from robot_control.constants import HOME_JOINTS_DEG, N_JOINTS
-from robot_control.dynamics import DynamicsModel, MomentumObserver
+from robot_control.constants import N_JOINTS
+from robot_control.dynamics import DynamicsModel
 from robot_control.xarm_utils import connect, go_home, read_state
+
+# Import fixed parameters from monitor
+from torque_monitor import (
+    MOTION_SPEED_THR, BLEND_ALPHA, COMP_COEFS,
+)
 
 
 LOG_HEADER = (
-    ["timestamp", "elapsed_s"]
+    ["timestamp", "elapsed_s", "lambda"]
     + [f"q{i+1}_deg" for i in range(N_JOINTS)]
     + [f"qd{i+1}_dps" for i in range(N_JOINTS)]
-    + [f"tau_meas{i+1}" for i in range(N_JOINTS)]
-    + [f"tau_grav{i+1}" for i in range(N_JOINTS)]
-    + [f"tau_cori{i+1}" for i in range(N_JOINTS)]
+    + [f"tau_api{i+1}" for i in range(N_JOINTS)]
+    + [f"tau_model{i+1}" for i in range(N_JOINTS)]
+    + [f"tau_comp{i+1}" for i in range(N_JOINTS)]
     + [f"tau_ext{i+1}" for i in range(N_JOINTS)]
 )
 
 
-def monitor_loop(arm, dyn, obs, csv_writer, dt, stop_event, t_start):
-    """Background thread: read sensors, run observer, log data."""
-    cal_samples = []
-    cal_done = False
-    cal_duration = 2.0
+def monitor_loop(arm, dyn, csv_writer, dt, stop_event, t_start):
+    """Background thread: read sensors, compute model, log data."""
+    lam = 0.0
 
     while not stop_event.is_set():
         t0 = time.monotonic()
@@ -50,29 +51,28 @@ def monitor_loop(arm, dyn, obs, csv_writer, dt, stop_event, t_start):
             time.sleep(dt)
             continue
 
-        tau_ext = obs.update(q, qd, tau_meas, dt)
+        tau_api = tau_meas
 
-        # Calibration during first 2s
+        # Smooth blend factor
+        max_speed = np.abs(qd).max()
+        is_moving = float(max_speed > MOTION_SPEED_THR)
+        lam = (1.0 - BLEND_ALPHA) * lam + BLEND_ALPHA * is_moving
+
+        tau_model = dyn.gravity(q) + dyn.coriolis(q, qd)
+
+        # Unified model
+        feat = np.concatenate([q, qd, [lam], q * lam, qd * lam, [1.0]])
+        tau_comp = COMP_COEFS @ feat
+        tau_ext = tau_api - tau_model - tau_comp
+
         elapsed = t0 - t_start
-        if not cal_done:
-            cal_samples.append(tau_ext.copy())
-            if elapsed >= cal_duration:
-                n_skip = len(cal_samples) // 2
-                if n_skip > 0:
-                    obs.calibrate(cal_samples[n_skip:])
-                cal_done = True
-                print("[CAL] Calibration done.")
-
-        tau_grav = dyn.gravity(q)
-        tau_cori = dyn.coriolis(q, qd)
-
         row = (
-            [f"{t0:.6f}", f"{elapsed:.4f}"]
+            [f"{t0:.6f}", f"{elapsed:.4f}", f"{lam:.4f}"]
             + [f"{v:.4f}" for v in q]
             + [f"{v:.4f}" for v in qd]
-            + [f"{v:.4f}" for v in tau_meas]
-            + [f"{v:.4f}" for v in tau_grav]
-            + [f"{v:.4f}" for v in tau_cori]
+            + [f"{v:.4f}" for v in tau_api]
+            + [f"{v:.4f}" for v in tau_model]
+            + [f"{v:.4f}" for v in tau_comp]
             + [f"{v:.4f}" for v in tau_ext]
         )
         csv_writer.writerow(row)
@@ -84,7 +84,6 @@ def monitor_loop(arm, dyn, obs, csv_writer, dt, stop_event, t_start):
 
 def random_cartesian_motion(arm, duration, radius_mm=150, speed=30):
     """Move end-effector randomly within a sphere around home position."""
-    # Get home TCP position
     arm.set_mode(0)
     arm.set_state(0)
     time.sleep(0.3)
@@ -101,10 +100,9 @@ def random_cartesian_motion(arm, duration, radius_mm=150, speed=30):
     waypoint_count = 0
 
     while time.monotonic() - t_start < duration:
-        # Random point within sphere
         direction = np.random.randn(3)
         direction /= np.linalg.norm(direction)
-        r = radius_mm * np.cbrt(np.random.uniform())  # uniform in volume
+        r = radius_mm * np.cbrt(np.random.uniform())
         target_xyz = home_xyz + direction * r
 
         code = arm.set_position(
@@ -125,7 +123,6 @@ def random_cartesian_motion(arm, duration, radius_mm=150, speed=30):
             arm.set_state(0)
             time.sleep(1)
 
-    # Return home
     print("[MOTION] Returning to home...")
     go_home(arm)
 
@@ -133,21 +130,17 @@ def random_cartesian_motion(arm, duration, radius_mm=150, speed=30):
 def main():
     p = argparse.ArgumentParser(description="Random motion test with torque monitoring")
     p.add_argument("--ip", default="192.168.1.199")
-    p.add_argument("--duration", type=int, default=180, help="Test duration (s)")
+    p.add_argument("--duration", type=int, default=120, help="Test duration (s)")
     p.add_argument("--radius", type=float, default=150, help="Sphere radius (mm)")
     p.add_argument("--speed", type=float, default=30, help="Motion speed (mm/s)")
     p.add_argument("--freq", type=int, default=100, help="Monitor frequency (Hz)")
-    p.add_argument("--gain", type=float, default=50.0, help="Observer gain")
     args = p.parse_args()
 
     arm = connect(args.ip)
     dyn = DynamicsModel()
-    obs = MomentumObserver(dyn, gain=args.gain)
 
-    # Go home first
     go_home(arm)
 
-    # Set up logging
     log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "logs")
     os.makedirs(log_dir, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -160,10 +153,9 @@ def main():
     stop_event = threading.Event()
     t_start = time.monotonic()
 
-    # Start monitor thread
     monitor_thread = threading.Thread(
         target=monitor_loop,
-        args=(arm, dyn, obs, csv_writer, 1.0 / args.freq, stop_event, t_start),
+        args=(arm, dyn, csv_writer, 1.0 / args.freq, stop_event, t_start),
         daemon=True,
     )
     monitor_thread.start()
@@ -173,9 +165,6 @@ def main():
     signal.signal(signal.SIGINT, _stop)
 
     try:
-        # Wait for calibration
-        time.sleep(3)
-        # Run random motion
         random_cartesian_motion(arm, args.duration, args.radius, args.speed)
     finally:
         stop_event.set()
