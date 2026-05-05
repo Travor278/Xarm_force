@@ -17,7 +17,6 @@ import xml.etree.ElementTree as ET
 import numpy as np
 from scipy.optimize import minimize
 
-sys.path.insert(0, "/home/mrblue/Projects/robot_control")
 from robot_control.constants import N_JOINTS, XARM6_URDF
 
 

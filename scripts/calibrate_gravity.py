@@ -21,7 +21,6 @@ import time
 
 import numpy as np
 
-sys.path.insert(0, "/home/mrblue/Projects/robot_control")
 from robot_control.constants import HOME_JOINTS_DEG, N_JOINTS
 from robot_control.dynamics import DynamicsModel
 from robot_control.gravity_calibration import GravityBiasModel

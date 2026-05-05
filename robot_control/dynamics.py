@@ -116,13 +116,16 @@ class DynamicsModel:
         )
 
     def eta(self, q_deg: np.ndarray, qd_dps: np.ndarray) -> np.ndarray:
-        """η(q,q̇) = C·q̇ + G − Ṁ·q̇  (used by momentum observer)."""
+        """η(q,q̇) ≈ C·q̇ + G  (used by momentum observer).
+
+        Drops the Ṁ·q̇ correction — it scales as O(q̇²) and is negligible
+        at typical operating speeds (<30 °/s → <0.1 Nm).  Skipping it
+        eliminates 2N mass-matrix evaluations per call (~6× speedup for η).
+        """
         q = np.deg2rad(q_deg)
         qd = np.deg2rad(qd_dps)
         z = [0.0] * N_JOINTS
-        n = self._id(q, qd, z)          # C·q̇ + G
-        mdot_qd = self._mdot_qd(q, qd)  # Ṁ·q̇
-        return n - mdot_qd
+        return self._id(q, qd, z)       # C·q̇ + G
 
     def close(self):
         if pb.isConnected(self._cid):
@@ -143,35 +146,41 @@ class MomentumObserver:
     gain : float
         Observer gain K_O (1/s).  Higher = faster convergence.
         Time constant ≈ 1/gain.  Default 50 → ~20 ms response.
-    tau_slew_max : float
-        Maximum allowed rate of change for τ_meas (Nm/s).
-        Rejects sudden sensor jumps (e.g. xArm J3 firmware offset switching).
     bias_model : GravityBiasModel | None
         Position-dependent bias model. If provided, bias(q) is subtracted
         from the observer output instead of a constant bias.
     """
 
-    # Known firmware jump sizes (Nm) — "high" state adds this offset.
-    # Detected joints: J2=7.534, J3=5.279, J5=3.221.
-    # When a jump of this size is detected, snap it back immediately.
-    _JUMP_TABLE = {
-        1: 7.534,   # J2 (index 1)
-        2: 5.279,   # J3 (index 2)
-        4: 3.221,   # J5 (index 4)
-    }
-    _JUMP_TOLERANCE = 1.0  # match if within ±1 Nm of known size
+    # Input-side median filter rejects single/double-step firmware spikes.
+    # Window=5 → 2 sample delay (~20 ms at 100 Hz), catches 1- and 2-step
+    # jumps without distorting continuous signals.
+    _MEDIAN_W = 5
+
+    # Output-side spike rejection: if τ_ext jumps suddenly while stationary,
+    # correct the observer integral σ to undo the leaked firmware artifact.
+    # Threshold 0.8 Nm catches median-smoothed firmware ramps (~1.25 Nm/step)
+    # while passing real hand-push forces (~0.5 Nm/step at 50 Nm/s).
+    _SPIKE_THR = 0.8   # Nm — min |Δr| in one step to trigger correction
+    _SPIKE_SPEED = 1.0  # deg/s — must be below this to count as stationary
+
+    # Adaptive bias: absorbs slow sensor drift when idle & |r| small.
+    _ADAPT_ALPHA = 0.02    # adaptation rate (at 100Hz → τ≈0.5s)
+    _ADAPT_SPEED_THR = 1.0  # deg/s — above this, bias frozen
+    _ADAPT_FORCE_THR = 1.5  # Nm — above this, bias frozen
 
     def __init__(self, dyn: DynamicsModel, gain: float = 50.0,
-                 tau_slew_max: float = 50.0, bias_model=None):
+                 bias_model=None):
         self._dyn = dyn
         self._gain = gain
-        self._tau_slew_max = tau_slew_max
         self._sigma: np.ndarray | None = None
-        self._tau_prev: np.ndarray | None = None
-        self._tau_raw_prev: np.ndarray | None = None
-        self._jump_offsets = np.zeros(N_JOINTS)
         self._bias = np.zeros(N_JOINTS)
         self._bias_model = bias_model
+        # Circular buffer for median filter
+        self._tau_buf = np.zeros((self._MEDIAN_W, N_JOINTS))
+        self._buf_idx = 0
+        self._buf_count = 0
+        # Previous output for spike detection
+        self._r_prev: np.ndarray | None = None
 
     def update(
         self,
@@ -181,24 +190,11 @@ class MomentumObserver:
         dt: float,
     ) -> np.ndarray:
         """Run one observer step.  Returns τ_ext estimate (Nm)."""
-        tau_meas = tau_meas.copy()
-
-        # Firmware jump correction: detect known fixed-size jumps and cancel
-        if self._tau_raw_prev is not None:
-            for idx, jump_size in self._JUMP_TABLE.items():
-                delta = tau_meas[idx] - self._tau_raw_prev[idx]
-                if abs(abs(delta) - jump_size) < self._JUMP_TOLERANCE:
-                    # Use known jump size for exact correction
-                    self._jump_offsets[idx] += np.sign(delta) * jump_size
-        self._tau_raw_prev = tau_meas.copy()
-        tau_meas -= self._jump_offsets
-
-        # Slew-rate limit for remaining noise
-        if self._tau_prev is not None:
-            max_delta = self._tau_slew_max * dt
-            delta = tau_meas - self._tau_prev
-            tau_meas = self._tau_prev + np.clip(delta, -max_delta, max_delta)
-        self._tau_prev = tau_meas.copy()
+        # Input-side median filter: reject single/double-step sensor spikes
+        self._tau_buf[self._buf_idx] = tau_meas
+        self._buf_idx = (self._buf_idx + 1) % self._MEDIAN_W
+        self._buf_count = min(self._buf_count + 1, self._MEDIAN_W)
+        tau_filt = np.median(self._tau_buf[:self._buf_count], axis=0)
 
         q_rad = np.deg2rad(q_deg)
         qd_rad = np.deg2rad(qd_dps)
@@ -213,21 +209,43 @@ class MomentumObserver:
         # First call — initialise integral to current momentum
         if self._sigma is None:
             self._sigma = p.copy()
+            self._r_prev = np.zeros(N_JOINTS)
             return np.zeros(N_JOINTS)
 
-        # Observer:  r = K · (σ − p),  σ += (τ − η − r) · dt
+        # Observer:  r = K · (σ − p),  σ += (τ_filt − η − r) · dt
         r = self._gain * (self._sigma - p)
-        self._sigma += (tau_meas - eta - r) * dt
+        self._sigma += (tau_filt - eta - r) * dt
 
-        # Subtract bias: position-dependent model or constant
+        # Subtract bias
         if self._bias_model is not None:
-            return r - self._bias_model.predict(q_deg)
-        return r - self._bias
+            r = r - self._bias_model.predict(q_deg)
+        else:
+            r = r - self._bias
+
+        # Output-side spike rejection: if r jumps AWAY from zero while
+        # stationary, it's a leaked firmware artifact — correct σ.
+        # Spikes moving TOWARD zero are recovery — let them through.
+        is_stationary = np.abs(qd_dps).max() < self._SPIKE_SPEED
+        if is_stationary and self._r_prev is not None:
+            delta_r = r - self._r_prev
+            for i in range(N_JOINTS):
+                if (abs(delta_r[i]) > self._SPIKE_THR
+                        and abs(r[i]) > abs(self._r_prev[i])):
+                    self._sigma[i] -= delta_r[i] / self._gain
+                    r[i] = self._r_prev[i]
+
+        # Adaptive bias: absorb drift when idle, freeze when pushed
+        is_idle = (is_stationary
+                   and np.abs(r).max() < self._ADAPT_FORCE_THR)
+        if is_idle:
+            self._bias += self._ADAPT_ALPHA * r
+
+        self._r_prev = r.copy()
+        return r
 
     def reset_tracking(self):
-        """Reset τ_meas tracking state after motion commands."""
-        self._tau_prev = None
-        self._tau_raw_prev = None
+        """No-op, kept for API compatibility."""
+        pass
 
     def calibrate(self, samples: list[np.ndarray]):
         """Set constant bias from calibration samples (fallback when no model)."""

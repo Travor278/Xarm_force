@@ -3,7 +3,6 @@
 import argparse
 import sys
 
-sys.path.insert(0, "/home/mrblue/Projects/robot_control")
 from robot_control.xarm_utils import connect, go_home
 
 

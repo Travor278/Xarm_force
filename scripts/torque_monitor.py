@@ -26,7 +26,6 @@ from datetime import datetime
 
 import numpy as np
 
-sys.path.insert(0, "/home/mrblue/Projects/robot_control")
 from robot_control.constants import N_JOINTS
 from robot_control.dynamics import DynamicsModel, MomentumObserver
 from robot_control.xarm_utils import connect, read_state

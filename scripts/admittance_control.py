@@ -22,7 +22,6 @@ import time
 
 import numpy as np
 
-sys.path.insert(0, "/home/mrblue/Projects/robot_control")
 from robot_control.constants import (
     DAMPING_SCALE,
     HOME_JOINTS_DEG,
