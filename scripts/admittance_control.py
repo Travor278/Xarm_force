@@ -5,8 +5,8 @@ xArm6 Admittance Control — Spring-Back Compliant Behavior
 Push the end-effector and the robot yields; release it and it springs
 back to the home position.
 
-Uses a momentum observer (De Luca 2005) for external torque estimation —
-no numerical differentiation of q̇, giving fast response without noise.
+Uses direct subtraction with smooth blend factor and online firmware
+bias detection for external torque estimation (same as torque_monitor).
 
 Usage:
   python scripts/admittance_control.py --ip 192.168.1.199
@@ -15,9 +15,7 @@ Usage:
 """
 
 import argparse
-import os
 import signal
-import sys
 import time
 
 import numpy as np
@@ -32,14 +30,46 @@ from robot_control.constants import (
     STIFFNESS_SCALE,
     TORQUE_DEAD_ZONE,
 )
-from robot_control.dynamics import DynamicsModel, MomentumObserver
+from robot_control.dynamics import DynamicsModel
 from robot_control.xarm_utils import connect, go_home, read_state
 
+# -- Force-estimation parameters (from torque_monitor) -------------------------
 
-def run(arm, dyn: DynamicsModel, obs: MomentumObserver, args):
+# Speed threshold for binary motion detector input to EMA (deg/s).
+MOTION_SPEED_THR = 2.0
+
+# EMA smoothing factor for blend factor lambda.
+BLEND_ALPHA = 0.2
+
+# Firmware discrete bias levels per joint (from k-means on 18 stop events).
+#                   LOW        HIGH
+BIAS_LEVELS = {
+    1: (  0.0000,   0.0000),
+    2: ( -4.5056,  +4.0151),
+    3: ( -2.4267,  +3.3561),
+    4: ( +0.0857,  +0.0857),
+    5: ( -1.9928,  +0.9617),
+    6: ( +0.1845,  +0.1845),
+}
+BIAS_MIDPOINTS = np.array([
+    (BIAS_LEVELS[j+1][0] + BIAS_LEVELS[j+1][1]) / 2 for j in range(N_JOINTS)
+])
+BIAS_IS_BIMODAL = np.array([
+    BIAS_LEVELS[j+1][0] != BIAS_LEVELS[j+1][1] for j in range(N_JOINTS)
+])
+
+# Detection parameters
+SETTLE_LAM_THR = 0.05
+DETECT_EMA_ALPHA = 0.05
+
+
+def run(arm, dyn: DynamicsModel, args):
     """Main admittance control loop.
 
     Model per joint:  B·q̇ = τ_ext − K·(q − q_home)
+
+    External torque estimation uses direct subtraction with smooth blend
+    and online firmware bias detection (same as torque_monitor).
     """
     B = args.damping * DAMPING_SCALE
     K = args.stiffness * STIFFNESS_SCALE
@@ -56,6 +86,12 @@ def run(arm, dyn: DynamicsModel, obs: MomentumObserver, args):
     consecutive_errors = 0
     running = True
 
+    # Force-estimation state (from torque_monitor)
+    lam = 0.0
+    detected_bias = np.zeros(N_JOINTS)
+    resid_ema = np.zeros(N_JOINTS)
+    ema_initialized = False
+
     def _stop(sig, frame):
         nonlocal running
         running = False
@@ -64,7 +100,7 @@ def run(arm, dyn: DynamicsModel, obs: MomentumObserver, args):
 
     print(
         f"[ADM] Active — damping={args.damping:.1f}  stiffness={args.stiffness:.2f}"
-        f"  max_vel={args.max_vel:.0f} deg/s  freq={args.freq} Hz  gain={args.gain:.0f}"
+        f"  max_vel={args.max_vel:.0f} deg/s  freq={args.freq} Hz"
     )
     print("[ADM] Push the robot to feel compliance.  Ctrl-C to stop.\n")
 
@@ -95,8 +131,37 @@ def run(arm, dyn: DynamicsModel, obs: MomentumObserver, args):
                 time.sleep(dt)
                 continue
 
-            # 2) External torque via momentum observer (no q̈ needed)
-            tau_ext = obs.update(q, qd, tau_meas, dt)
+            # 2) External torque via direct subtraction + online bias
+            tau_model = dyn.gravity(q) + dyn.coriolis(q, qd)
+            resid = tau_meas - tau_model
+
+            # Smooth blend factor lambda
+            max_speed = np.abs(qd).max()
+            is_moving = float(max_speed > MOTION_SPEED_THR)
+            lam = (1.0 - BLEND_ALPHA) * lam + BLEND_ALPHA * is_moving
+
+            # Online bias detection (continuous)
+            if lam < SETTLE_LAM_THR:
+                if not ema_initialized:
+                    resid_ema[:] = resid
+                    ema_initialized = True
+                else:
+                    resid_ema += DETECT_EMA_ALPHA * (resid - resid_ema)
+
+                for i in range(N_JOINTS):
+                    if BIAS_IS_BIMODAL[i]:
+                        lo, hi = BIAS_LEVELS[i + 1]
+                        if resid_ema[i] > BIAS_MIDPOINTS[i]:
+                            detected_bias[i] = hi
+                        else:
+                            detected_bias[i] = lo
+                    else:
+                        detected_bias[i] = BIAS_LEVELS[i + 1][0]
+            else:
+                ema_initialized = False
+
+            tau_jump = detected_bias * (1.0 - lam)
+            tau_ext = tau_model + tau_jump - tau_meas
 
             # 3) Dead-zone
             for i in range(N_JOINTS):
@@ -108,9 +173,13 @@ def run(arm, dyn: DynamicsModel, obs: MomentumObserver, args):
             # 4) Low-pass filter
             tau_filt = alpha_tau * tau_ext + (1.0 - alpha_tau) * tau_filt
 
-            # 5) Admittance law:  q̇ = (τ_ext − K·Δq) / B
+            # 5) Admittance law:  q̇ = (τ_ext − K·Δq) / B_eff
             delta_q = q - q_home
-            qd_cmd = (tau_filt - K * delta_q) / B
+            # Gaussian damping: B increases near home to suppress oscillation
+            #   B_eff = B * (1 + gain * exp(-Δq² / (2σ²)))
+            gauss = np.exp(-delta_q**2 / (2.0 * args.damping_sigma**2))
+            B_eff = B * (1.0 + args.damping_gain * gauss)
+            qd_cmd = (tau_filt - K * delta_q) / B_eff
 
             # 6) Soft joint-limit repulsion
             for i in range(N_JOINTS):
@@ -153,57 +222,22 @@ def main():
                    help="Control loop frequency [Hz] (default: 100)")
     p.add_argument("--filter-alpha", type=float, default=0.3,
                    help="Torque EMA filter (0-1, default: 0.3)")
-    p.add_argument("--gain", type=float, default=50.0,
-                   help="Observer gain (higher=faster, default: 50)")
-    p.add_argument("--bias-model", default="auto", metavar="FILE",
-                   help="Gravity bias model .npz (default: auto-detect, 'none' to skip)")
-    p.add_argument("--cal-time", type=float, default=2.0,
-                   help="Zero-point calibration duration if no model (default: 2)")
-    p.add_argument("--no-cal", action="store_true",
-                   help="Skip all bias compensation")
+    p.add_argument("--damping-gain", type=float, default=3.0,
+                   help="Extra damping multiplier at home (default: 3.0)")
+    p.add_argument("--damping-sigma", type=float, default=5.0,
+                   help="Gaussian width for extra damping [deg] (default: 5.0)")
     p.add_argument("--return-home", action=argparse.BooleanOptionalAction,
                    default=True, help="Return home on exit (default: True)")
     args = p.parse_args()
 
-    # Load gravity bias model if available
-    bias_model = None
-    if not args.no_cal and args.bias_model != "none":
-        model_path = args.bias_model
-        if model_path == "auto":
-            model_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                os.pardir, "assets", "gravity_bias_model.npz",
-            )
-        if os.path.exists(model_path):
-            from robot_control.gravity_calibration import GravityBiasModel
-            bias_model = GravityBiasModel.load(model_path)
-            print(f"[CAL] Loaded gravity bias model from {model_path}")
-
     arm = connect(args.ip)
     dyn = DynamicsModel()
-    obs = MomentumObserver(dyn, gain=args.gain, bias_model=bias_model)
-    print("[ADM] Dynamics model + momentum observer loaded.")
+    print("[ADM] Dynamics model loaded.")
+    print(f"[ADM] Bimodal joints: {[j+1 for j in range(N_JOINTS) if BIAS_IS_BIMODAL[j]]}")
 
     try:
         go_home(arm)
-
-        # Fallback: constant zero-point calibration if no model
-        dt = 1.0 / args.freq
-        if not args.no_cal and bias_model is None:
-            print(f"[CAL] No bias model found, constant calibrating {args.cal_time:.1f}s ...")
-            cal_samples = []
-            cal_start = time.monotonic()
-            while time.monotonic() - cal_start < args.cal_time:
-                q, qd, tau_meas, ok = read_state(arm)
-                if ok:
-                    tau_ext = obs.update(q, qd, tau_meas, dt)
-                    cal_samples.append(tau_ext.copy())
-                time.sleep(dt)
-            n_skip = len(cal_samples) // 2
-            if n_skip > 0:
-                obs.calibrate(cal_samples[n_skip:])
-
-        run(arm, dyn, obs, args)
+        run(arm, dyn, args)
     finally:
         dyn.close()
         arm.disconnect()
