@@ -194,6 +194,12 @@ class FullFakeSdk(FakeSdk):
             gripper_state=NS(grippers_angle=30_000),
         )
         self.auto_advance = False
+        self.ack_role_commands = True
+        self._response_clock = 20.0
+        self.response = NS(
+            time_stamp=0.0,
+            instruction_response=NS(instruction_index=-1),
+        )
 
     def ConnectPort(self, **kwargs):
         self.calls.append(("ConnectPort", kwargs))
@@ -209,6 +215,18 @@ class FullFakeSdk(FakeSdk):
 
     def MasterSlaveConfig(self, *args):
         self.calls.append(("MasterSlaveConfig", *args))
+        if args[0] == 0xFA and self.ack_role_commands:
+            self._response_clock += 0.001
+            self.response.time_stamp = self._response_clock
+            self.response.instruction_response.instruction_index = 0x70
+
+    def ClearRespSetInstruction(self):
+        self.calls.append(("ClearRespSetInstruction",))
+        self.response.time_stamp = 0.0
+        self.response.instruction_response.instruction_index = -1
+
+    def GetRespInstruction(self):
+        return self.response
 
     def MotionCtrl_1(self, *args):
         self.calls.append(("MotionCtrl_1", *args))
@@ -320,6 +338,8 @@ def test_coordinator_watchdog_holds_then_fails_without_disabling(tmp_path: Path)
         sleeper=lambda _duration: None,
     )
     coordinator.connect()
+    sdks["can0"].ack_role_commands = False
+    sdks["can1"].ack_role_commands = False
     initial_joint_commands = sum(
         call[0] == "JointCtrl" for call in sdks["can2"].calls
     )
@@ -330,9 +350,30 @@ def test_coordinator_watchdog_holds_then_fails_without_disabling(tmp_path: Path)
     assert held_joint_commands == initial_joint_commands
 
     now[0] += 701_000_000
-    with pytest.raises(TeleopSafetyError, match="leader command timeout"):
+    with pytest.raises(TeleopSafetyError, match="leader liveness timeout"):
         coordinator.step()
     assert not any(call[0] == "DisableArm" for call in sdks["can2"].calls)
+    coordinator.close()
+
+
+def test_coordinator_accepts_role_ack_as_stationary_leader_liveness(tmp_path: Path):
+    sdks = _sdk_fixture()
+    now = [1_000_000_000]
+    coordinator = StandaloneTeleopCoordinator(
+        _pair_configs(tmp_path),
+        sdk_factory=lambda interface, **_kwargs: sdks[interface],
+        clock_ns=lambda: now[0],
+        sleeper=lambda _duration: None,
+    )
+    coordinator.connect()
+    initial_commands = sum(call[0] == "JointCtrl" for call in sdks["can2"].calls)
+
+    now[0] += 1_100_000_000
+    states = coordinator.step()
+
+    assert set(states) == {"left", "right"}
+    assert sum(call[0] == "JointCtrl" for call in sdks["can2"].calls) > initial_commands
+    assert ("ClearRespSetInstruction",) in sdks["can0"].calls
     coordinator.close()
 
 

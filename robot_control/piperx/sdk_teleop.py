@@ -234,7 +234,9 @@ class _PairSession:
     follower: _Endpoint
     target: OperatorTarget
     last_sdk_timestamp_s: float
-    last_command_ns: int
+    last_response_timestamp_s: float
+    last_liveness_ns: int
+    last_probe_ns: int
 
 
 def _feedback_pose(interface: object) -> tuple[tuple[float, ...], tuple[int, ...], float]:
@@ -397,6 +399,7 @@ class StandaloneTeleopCoordinator:
             for _config, _leader, follower in pairs:
                 follower.sdk.MasterSlaveConfig(0xFC, 0, 0, 0)
             for _config, leader, _follower in pairs:
+                leader.sdk.ClearRespSetInstruction()
                 leader.sdk.MasterSlaveConfig(0xFA, 0, 0, 0)
                 leader.sdk.MotionCtrl_1(0x02, 0, 0)
             for config, leader, follower in pairs:
@@ -412,13 +415,21 @@ class StandaloneTeleopCoordinator:
                 self._wait_enabled(follower)
                 _command_follower(follower.sdk, target, self.gripper_effort)
                 now_ns = self.clock_ns()
+                response = leader.sdk.GetRespInstruction()
+                response_timestamp_s = (
+                    float(response.time_stamp)
+                    if int(response.instruction_response.instruction_index) == 0x70
+                    else 0.0
+                )
                 self._sessions[config.name] = _PairSession(
                     config=config,
                     leader=leader,
                     follower=follower,
                     target=target,
                     last_sdk_timestamp_s=target.timestamp_s,
-                    last_command_ns=now_ns,
+                    last_response_timestamp_s=response_timestamp_s,
+                    last_liveness_ns=now_ns,
+                    last_probe_ns=now_ns,
                 )
             self._connected = True
         except Exception:
@@ -431,6 +442,24 @@ class StandaloneTeleopCoordinator:
         now_ns = self.clock_ns()
         states: dict[str, PiperState] = {}
         for name, session in self._sessions.items():
+            if now_ns - session.last_probe_ns >= self.hold_after_ns:
+                try:
+                    session.leader.sdk.ClearRespSetInstruction()
+                    session.leader.sdk.MasterSlaveConfig(0xFA, 0, 0, 0)
+                    session.last_probe_ns = now_ns
+                except Exception:
+                    pass
+            try:
+                response = session.leader.sdk.GetRespInstruction()
+                response_timestamp_s = float(response.time_stamp)
+                if (
+                    int(response.instruction_response.instruction_index) == 0x70
+                    and response_timestamp_s > session.last_response_timestamp_s
+                ):
+                    session.last_response_timestamp_s = response_timestamp_s
+                    session.last_liveness_ns = now_ns
+            except Exception:
+                pass
             new_target: OperatorTarget | None = None
             try:
                 candidate = operator_target(
@@ -444,18 +473,14 @@ class StandaloneTeleopCoordinator:
             if new_target is not None:
                 session.target = new_target
                 session.last_sdk_timestamp_s = new_target.timestamp_s
-                session.last_command_ns = now_ns
+                session.last_liveness_ns = now_ns
+            age_ns = now_ns - session.last_liveness_ns
+            if age_ns > self.fail_after_ns:
+                raise TeleopSafetyError(f"{name} leader liveness timeout")
+            if age_ns <= self.hold_after_ns:
                 _command_follower(
                     session.follower.sdk, session.target, self.gripper_effort
                 )
-            else:
-                age_ns = now_ns - session.last_command_ns
-                if age_ns > self.fail_after_ns:
-                    raise TeleopSafetyError(f"{name} leader command timeout")
-                if age_ns <= self.hold_after_ns:
-                    _command_follower(
-                        session.follower.sdk, session.target, self.gripper_effort
-                    )
             states[name] = follower_state(
                 session.follower.sdk,
                 session.follower.identity,
