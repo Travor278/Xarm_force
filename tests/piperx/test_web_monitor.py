@@ -6,6 +6,7 @@ from pathlib import Path
 import queue
 import socket
 import struct
+import threading
 import warnings
 
 import numpy as np
@@ -31,13 +32,14 @@ from robot_control.piperx.web_monitor import (
 )
 
 
-def _frames() -> list[CanFrame]:
+def _frames(cycles=1, interval_ns=5_000_000) -> list[CanFrame]:
     frames = []
-    timestamp = 1_000_000_000
-    for can_id in (0x2A5, 0x2A6, 0x2A7):
-        frames.append(CanFrame(can_id, struct.pack(">ii", 1000, 2000), timestamp))
-    for index, can_id in enumerate(range(0x251, 0x257)):
-        frames.append(CanFrame(can_id, struct.pack(">hhi", index, 100, 0), timestamp))
+    for cycle in range(cycles):
+        timestamp = 1_000_000_000 + cycle * interval_ns
+        for can_id in (0x2A5, 0x2A6, 0x2A7):
+            frames.append(CanFrame(can_id, struct.pack(">ii", 1000, 2000), timestamp))
+        for index, can_id in enumerate(range(0x251, 0x257)):
+            frames.append(CanFrame(can_id, struct.pack(">hhi", index, 100, 0), timestamp))
     return frames
 
 
@@ -62,7 +64,11 @@ class _Reader:
 
 
 class _Estimator:
+    def __init__(self):
+        self.calls = 0
+
     def estimate(self, state):
+        self.calls += 1
         zeros = np.zeros(6)
         return Estimate(
             interface=state.interface,
@@ -86,9 +92,10 @@ def test_acquisition_worker_publishes_real_assembled_snapshot_and_stops_cleanly(
     subscriber = hub.subscribe()
     reader = _Reader(_frames())
     config = ArmMonitorConfig("left", "serial-left", tmp_path / "left.json", "can2")
+    estimator = _Estimator()
     worker = ArmAcquisitionWorker(
         config,
-        estimator=_Estimator(),
+        estimator=estimator,
         hub=hub,
         reader_factory=lambda _interface, timeout_s: reader,
         ui_rate_hz=50.0,
@@ -106,6 +113,30 @@ def test_acquisition_worker_publishes_real_assembled_snapshot_and_stops_cleanly(
     assert worker.latest == event
     assert reader.closed
     assert not worker.status()["running"]
+
+
+def test_acquisition_worker_skips_expensive_estimation_between_ui_frames(tmp_path):
+    hub = LatestEventHub()
+    reader = _Reader(_frames(cycles=4, interval_ns=5_000_000))
+    estimator = _Estimator()
+    worker = ArmAcquisitionWorker(
+        ArmMonitorConfig("left", "serial-left", tmp_path / "left.json", "can2"),
+        estimator=estimator,
+        hub=hub,
+        reader_factory=lambda _interface, timeout_s: reader,
+        ui_rate_hz=50.0,
+    )
+
+    worker.start()
+    for _ in range(100):
+        if reader.frames.empty():
+            break
+        threading.Event().wait(0.005)
+    threading.Event().wait(0.05)
+    worker.stop()
+
+    assert worker.status()["sequence"] == 1
+    assert estimator.calls == 1
 
 
 @dataclass

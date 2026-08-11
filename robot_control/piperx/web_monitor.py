@@ -135,12 +135,12 @@ class ArmAcquisitionWorker:
                     )
                     if state is None:
                         continue
-                    estimate = self.estimator.estimate(state)
                     if (
                         last_publish_ns is not None
                         and state.timestamp_ns - last_publish_ns < self.publish_period_ns
                     ):
                         continue
+                    estimate = self.estimator.estimate(state)
                     self._sequence += 1
                     event = serialize_snapshot(
                         self.name,
