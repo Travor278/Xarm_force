@@ -5,6 +5,7 @@ def test_package_exports_supported_library_entrypoints():
     expected = {
         "CalibrationArtifact",
         "ExternalTorqueEstimator",
+        "LatestEventHub",
         "PinocchioDynamics",
         "PiperStateAssembler",
         "ReadOnlySocketCan",
@@ -14,6 +15,7 @@ def test_package_exports_supported_library_entrypoints():
         "fit_calibration",
         "load_torque_log",
         "save_torque_log",
+        "serialize_snapshot",
     }
 
     assert set(piperx.__all__) == expected
