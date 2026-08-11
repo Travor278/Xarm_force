@@ -328,6 +328,24 @@ def test_coordinator_owns_each_sdk_once_and_shares_follower_feedback(tmp_path: P
     assert states["left"].current_a == pytest.approx((-0.1,) * 6)
 
 
+def test_coordinator_checks_both_alignments_before_enabling_either_follower(
+    tmp_path: Path,
+):
+    sdks = _sdk_fixture()
+    sdks["can3"].joints.joint_state.joint_4 = 50_000
+    coordinator = StandaloneTeleopCoordinator(
+        _pair_configs(tmp_path),
+        sdk_factory=lambda interface, **_kwargs: sdks[interface],
+        sleeper=lambda _duration: None,
+    )
+
+    with pytest.raises(TeleopSafetyError, match="right.*alignment"):
+        coordinator.connect()
+
+    assert not any(call[0] == "EnableArm" for call in sdks["can2"].calls)
+    assert not any(call[0] == "EnableArm" for call in sdks["can3"].calls)
+
+
 def test_coordinator_watchdog_holds_then_fails_without_disabling(tmp_path: Path):
     sdks = _sdk_fixture()
     now = [1_000_000_000]

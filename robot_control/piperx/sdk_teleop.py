@@ -357,19 +357,6 @@ class StandaloneTeleopCoordinator:
             f"timed out waiting for feedback from {endpoint.identity.name}"
         )
 
-    def _wait_operator_target(self, endpoint: _Endpoint) -> OperatorTarget:
-        for _attempt in range(300):
-            try:
-                operator_target(endpoint.sdk)
-                self.sleeper(0.1)
-                return operator_target(endpoint.sdk)
-            except TeleopSafetyError:
-                self.sleeper(0.01)
-        raise TeleopSafetyError(
-            f"timed out waiting for teaching frames from {endpoint.identity.name}; "
-            "set it to leader mode (0xFA) and power-cycle that leader arm"
-        )
-
     def _wait_enabled(self, endpoint: _Endpoint) -> None:
         for attempt in range(300):
             if attempt % 20 == 0:
@@ -402,15 +389,36 @@ class StandaloneTeleopCoordinator:
                 leader.sdk.ClearRespSetInstruction()
                 leader.sdk.MasterSlaveConfig(0xFA, 0, 0, 0)
                 leader.sdk.MotionCtrl_1(0x02, 0, 0)
-            for config, leader, follower in pairs:
-                target = self._wait_operator_target(leader)
-                follower_q, _follower_mdeg, follower_gripper = self._wait_pose(follower)
-                require_aligned(
-                    target.q_rad,
-                    follower_q,
-                    target.gripper_mm,
-                    follower_gripper,
+            self.sleeper(0.35)
+            aligned_targets: dict[str, OperatorTarget] = {}
+            last_alignment_error = "no complete teaching target received"
+            for _attempt in range(3000):
+                candidates: dict[str, OperatorTarget] = {}
+                try:
+                    for config, leader, follower in pairs:
+                        target = operator_target(leader.sdk)
+                        follower_q, _follower_mdeg, follower_gripper = (
+                            _feedback_pose(follower.sdk)
+                        )
+                        require_aligned(
+                            target.q_rad,
+                            follower_q,
+                            target.gripper_mm,
+                            follower_gripper,
+                        )
+                        candidates[config.name] = target
+                except TeleopSafetyError as error:
+                    last_alignment_error = f"{config.name} alignment pending: {error}"
+                    self.sleeper(0.01)
+                    continue
+                aligned_targets = candidates
+                break
+            if len(aligned_targets) != len(pairs):
+                raise TeleopSafetyError(
+                    f"timed out waiting for {last_alignment_error}"
                 )
+            for config, leader, follower in pairs:
+                target = aligned_targets[config.name]
                 follower.sdk.ModeCtrl(1, 1, self.speed_ratio, 0xAD)
                 self._wait_enabled(follower)
                 _command_follower(follower.sdk, target, self.gripper_effort)
