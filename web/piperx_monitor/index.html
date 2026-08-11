@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111416">
+  <title>PiperX · Force Trace</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+  <header class="masthead">
+    <div class="identity">
+      <div class="identity-mark" aria-hidden="true"><i></i><i></i><i></i></div>
+      <div>
+        <p class="eyebrow">PASSIVE TELEMETRY / RECEIVE ONLY</p>
+        <h1>PIPER-X <span>FORCE TRACE</span></h1>
+      </div>
+    </div>
+    <div class="connection-badge" id="connectionBadge" data-state="connecting">
+      <span class="signal-dot"></span>
+      <div><small>SSH / SSE LINK</small><strong id="connectionLabel">正在连接</strong></div>
+    </div>
+  </header>
+
+  <section class="status-rail" aria-label="实时状态">
+    <article class="status-cell">
+      <span class="status-index">01</span><small>左臂 CAN</small>
+      <strong id="leftRate">--</strong><em>Hz</em>
+    </article>
+    <article class="status-cell">
+      <span class="status-index">02</span><small>右臂 CAN</small>
+      <strong id="rightRate">--</strong><em>Hz</em>
+    </article>
+    <article class="status-cell wide">
+      <span class="status-index">03</span><small>估计状态</small>
+      <strong id="estimateState">等待数据</strong>
+      <em id="sampleAge">-- ms</em>
+    </article>
+    <article class="status-cell wide" id="firmwareCell" data-state="unknown">
+      <span class="status-index">04</span><small>反馈力矩比例</small>
+      <strong id="firmwareState">固件未知</strong><em id="firmwareVersion">--</em>
+    </article>
+  </section>
+
+  <main class="monitor-shell">
+    <section class="scope-column">
+      <div class="scope-controls panel">
+        <div class="selector-group" aria-label="机械臂选择">
+          <span class="control-label">ARM</span>
+          <button class="segment active" data-arm="left" type="button">LEFT / L</button>
+          <button class="segment" data-arm="right" type="button">RIGHT / R</button>
+        </div>
+        <div class="selector-group joint-selector" aria-label="关节选择">
+          <span class="control-label">JOINT</span>
+          <button class="joint-key active" data-joint="0" type="button">J1</button>
+          <button class="joint-key" data-joint="1" type="button">J2</button>
+          <button class="joint-key" data-joint="2" type="button">J3</button>
+          <button class="joint-key" data-joint="3" type="button">J4</button>
+          <button class="joint-key" data-joint="4" type="button">J5</button>
+          <button class="joint-key" data-joint="5" type="button">J6</button>
+        </div>
+        <div class="scope-actions">
+          <label class="window-control">WINDOW
+            <select id="windowSelect" aria-label="时间窗口">
+              <option value="10">10 s</option>
+              <option value="20" selected>20 s</option>
+              <option value="40">40 s</option>
+              <option value="60">60 s</option>
+            </select>
+          </label>
+          <button class="pause-control" id="pauseButton" type="button"><span></span> PAUSE</button>
+        </div>
+      </div>
+
+      <article class="scope-card panel" aria-labelledby="torqueTitle">
+        <div class="panel-heading">
+          <div>
+            <p class="kicker">SYNCHRONIZED STRIP / <span id="activeIdentity">LEFT · J1</span></p>
+            <h2 id="torqueTitle">关节力矩时间轴</h2>
+          </div>
+          <div class="trace-legend" aria-label="曲线开关">
+            <label class="trace-toggle external"><input type="checkbox" data-trace="external" checked><span></span>外力矩估计</label>
+            <label class="trace-toggle effort"><input type="checkbox" data-trace="effort" checked><span></span>电流换算力矩</label>
+            <label class="trace-toggle model"><input type="checkbox" data-trace="model" checked><span></span>动力学模型</label>
+          </div>
+        </div>
+        <div class="canvas-wrap main-canvas">
+          <canvas id="torqueCanvas" aria-label="力矩实时曲线"></canvas>
+          <div class="unit-tag">N·m</div>
+          <div class="invalid-stamp" id="invalidStamp">ESTIMATE INVALID</div>
+        </div>
+        <div class="scope-readout">
+          <div><small>τ EXT</small><strong id="externalNow">--</strong><span>N·m</span></div>
+          <div><small>τ EFFORT</small><strong id="effortNow">--</strong><span>N·m</span></div>
+          <div><small>τ MODEL</small><strong id="modelNow">--</strong><span>N·m</span></div>
+          <div><small>CURRENT</small><strong id="currentNow">--</strong><span>A</span></div>
+        </div>
+      </article>
+
+      <section class="mini-grid" aria-label="关节辅助量">
+        <article class="mini-card panel"><header><span>Q</span><strong>关节角度</strong><em>deg</em></header><canvas id="positionCanvas"></canvas></article>
+        <article class="mini-card panel"><header><span>Q̇</span><strong>角速度</strong><em>rad/s</em></header><canvas id="velocityCanvas"></canvas></article>
+        <article class="mini-card panel"><header><span>I</span><strong>关节电流</strong><em>A</em></header><canvas id="currentCanvas"></canvas></article>
+        <article class="mini-card panel"><header><span>ΔQ</span><strong>跟踪误差</strong><em>deg</em></header><canvas id="trackingCanvas"></canvas></article>
+      </section>
+    </section>
+
+    <aside class="diagnostic-column">
+      <article class="correlation-card panel">
+        <p class="kicker">ROLLING PEARSON / 20+ SAMPLES</p>
+        <h2>趋势相关性 <span>非精度</span></h2>
+        <div class="correlation-gauge">
+          <svg viewBox="0 0 220 122" aria-hidden="true">
+            <path class="gauge-track" d="M24 106 A86 86 0 0 1 196 106"></path>
+            <path class="gauge-value" id="correlationArc" d="M24 106 A86 86 0 0 1 196 106"></path>
+          </svg>
+          <strong id="correlationValue">--</strong><small>ρ</small>
+        </div>
+        <div class="correlation-scale"><span>-1 反向</span><span>0</span><span>+1 同向</span></div>
+        <p class="truth-warning">电流换算力矩与估计量共享电流来源。相关只表示趋势，不是独立真值，也不能证明绝对精度。</p>
+      </article>
+
+      <article class="alarm-card panel">
+        <div class="panel-heading compact"><div><p class="kicker">DRIVER / VALIDITY</p><h2>告警与失效原因</h2></div><span class="alarm-count" id="alarmCount">0</span></div>
+        <ul class="alarm-list" id="alarmList"><li class="empty">等待遥测数据</li></ul>
+      </article>
+
+      <article class="method-card panel">
+        <p class="kicker">ESTIMATION EQUATION</p>
+        <h2>当前符号约定</h2>
+        <code>τ<sub>ext</sub> = τ<sub>model</sub> + τ<sub>bias</sub> − τ<sub>effort</sub></code>
+        <dl>
+          <div><dt>源</dt><dd>从臂 SocketCAN</dd></div>
+          <div><dt>传输</dt><dd>SSH 本地转发</dd></div>
+          <div><dt>控制写入</dt><dd class="safe">无 / RX ONLY</dd></div>
+        </dl>
+      </article>
+    </aside>
+
+    <section class="joint-matrix panel" aria-labelledby="matrixTitle">
+      <div class="matrix-heading">
+        <div><p class="kicker">ALL CHANNELS / LATEST SAMPLE</p><h2 id="matrixTitle">双臂六关节快照</h2></div>
+        <div class="matrix-key"><span class="valid-key"></span>有效 <span class="invalid-key"></span>无效或过期</div>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>ARM</th><th>JOINT</th><th>τ EXT <i>N·m</i></th><th>τ EFFORT <i>N·m</i></th><th>CURRENT <i>A</i></th><th>Q <i>deg</i></th><th>Q̇ <i>rad/s</i></th><th>MOTOR <i>°C</i></th><th>FOC <i>°C</i></th><th>STATE</th></tr></thead>
+          <tbody id="jointTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>PIPER-X FORCE TRACE / SCHEMA piperx-monitor-v1</span>
+    <strong>测量提示：绝对精度必须使用独立六维力传感器或标定载荷验收</strong>
+    <span id="clock">--:--:--</span>
+  </footer>
+  <noscript>此监控页面需要 JavaScript 才能绘制实时数据。</noscript>
+  <script type="module" src="/assets/app.js"></script>
+</body>
+</html>
