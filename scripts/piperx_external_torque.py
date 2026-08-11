@@ -88,6 +88,15 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("--confirm-known-load", action="store_true")
     _add_base_rpy(record)
 
+    remodel = subparsers.add_parser(
+        "remodel", help="recompute a saved log with the current URDF and payload"
+    )
+    remodel.add_argument("--input", type=Path, required=True)
+    remodel.add_argument("--output", type=Path, required=True)
+    remodel.add_argument("--urdf", type=Path, required=True)
+    remodel.add_argument("--payload", type=Path, default=DEFAULT_PAYLOAD)
+    _add_base_rpy(remodel)
+
     fit = subparsers.add_parser("fit", help="fit one arm's no-contact residual artifact")
     fit.add_argument("--input", type=Path, required=True)
     fit.add_argument("--output", type=Path, required=True)
@@ -236,6 +245,53 @@ def _run_fit(args: argparse.Namespace) -> int:
     )
     artifact.save(args.output)
     print(json.dumps({"output": str(args.output), "metrics": artifact.metrics}, indent=2))
+    return 0
+
+
+def _remodel_log(log: TorqueLog, dynamics: object) -> TorqueLog:
+    arrays = {name: np.asarray(values).copy() for name, values in log.arrays.items()}
+    q = np.asarray(arrays["q"], dtype=np.float64)
+    qd = np.asarray(arrays["qd"], dtype=np.float64)
+    qdd = np.asarray(arrays["qdd"], dtype=np.float64)
+    measured = np.asarray(arrays["tau_measured"], dtype=np.float64)
+    if q.ndim != 2 or q.shape[1:] != (6,) or qd.shape != q.shape or qdd.shape != q.shape:
+        raise PiperTorqueCliError("remodel input has invalid q/qd/qdd arrays")
+    model = np.full_like(q, np.nan)
+    for index in range(q.shape[0]):
+        if np.all(np.isfinite(np.concatenate((q[index], qd[index], qdd[index])))):
+            model[index] = dynamics.compute(q[index], qd[index], qdd[index])
+    arrays["tau_model"] = model
+    arrays["tau_bias"] = np.zeros_like(model)
+    arrays["tau_external"] = model - measured
+    return TorqueLog(arrays=arrays, metadata=dict(log.metadata))
+
+
+def _run_remodel(args: argparse.Namespace) -> int:
+    if args.input.resolve() == args.output.resolve():
+        raise PiperTorqueCliError("remodel output must not overwrite the source log")
+    source = load_torque_log(args.input)
+    payload = RigidPayload.load(args.payload)
+    dynamics = PinocchioDynamics(
+        args.urdf, base_rpy=args.base_rpy, payload=payload
+    )
+    remodeled = _remodel_log(source, dynamics)
+    remodeled.metadata.update(
+        {
+            "urdf_path": str(dynamics.urdf_path),
+            "urdf_sha256": dynamics.urdf_sha256,
+            "payload_path": str(args.payload.resolve()),
+            "payload_sha256": dynamics.payload_sha256,
+            "base_rpy": list(dynamics.base_rpy),
+            "remodeled_from": str(args.input.resolve()),
+            "remodeled_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    save_torque_log(args.output, remodeled)
+    print(json.dumps({
+        "output": str(args.output),
+        "samples": int(remodeled.arrays["q"].shape[0]),
+        "payload_sha256": dynamics.payload_sha256,
+    }, indent=2))
     return 0
 
 
@@ -494,6 +550,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "record":
             return _run_record(args)
+        if args.command == "remodel":
+            return _run_remodel(args)
         if args.command == "fit":
             return _run_fit(args)
         if args.command == "monitor":

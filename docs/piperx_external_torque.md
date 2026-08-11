@@ -82,6 +82,17 @@ python scripts/piperx_external_torque.py fit \
 
 数据按连续时间组切分，最后一部分完整组作为验证集，不随机打散相邻帧。JSON 会输出训练和验证的逐关节 MAE、RMSE、标准差及 p95 绝对误差。
 
+如果已有包含 `q/qd/qdd/tau_measured` 的无接触日志，而动力学模型仅增加了本仓库的夹爪负载，可保留原始日志并先重算模型项：
+
+```bash
+python scripts/piperx_external_torque.py remodel \
+  --input data/left-calibration.npz \
+  --output data/left-calibration-with-gripper.npz \
+  --urdf /absolute/path/piper_x_description_no_gripper.urdf
+```
+
+随后用新输出重新 `fit`。`remodel` 明确禁止原地覆盖输入，并把 URDF/负载哈希写入新日志。
+
 静态无接触验收：
 
 ```bash

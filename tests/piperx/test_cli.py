@@ -9,6 +9,7 @@ from robot_control.piperx.records import TorqueLog, save_torque_log
 from scripts.piperx_external_torque import (
     PiperTorqueCliError,
     _validate_record_confirmation,
+    _remodel_log,
     build_parser,
     compute_statistics,
     main,
@@ -49,8 +50,29 @@ def _offline_log(count=100, *, measured_offset=0.0, serial="serial-left"):
 def test_parser_exposes_all_validation_workflows():
     parser = build_parser()
 
-    for command in ("discover", "record", "fit", "monitor", "evaluate", "known-load"):
+    for command in (
+        "discover", "record", "remodel", "fit", "monitor", "evaluate", "known-load"
+    ):
         assert command in parser.format_help()
+
+
+def test_remodel_recomputes_model_and_invalidates_old_bias_fields():
+    class Dynamics:
+        def compute(self, q, qd, qdd):
+            return q + 2 * qd + 3 * qdd
+
+    source = _offline_log(count=10)
+    source.arrays["qd"][:] = 0.25
+    source.arrays["qdd"][:] = 0.5
+
+    remodeled = _remodel_log(source, Dynamics())
+
+    expected = source.arrays["q"] + 2 * source.arrays["qd"] + 3 * source.arrays["qdd"]
+    assert remodeled.arrays["tau_model"] == pytest.approx(expected)
+    assert remodeled.arrays["tau_bias"] == pytest.approx(0.0)
+    assert remodeled.arrays["tau_external"] == pytest.approx(
+        expected - source.arrays["tau_measured"]
+    )
 
 
 def test_script_help_runs_directly_without_editable_install():
