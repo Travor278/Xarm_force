@@ -137,6 +137,10 @@ cd /home/dell/piperx-force-validation
 窗口中输入凭据。关闭该 SSH 窗口或按 `Ctrl+C` 会同时停止转发和本次远端
 监控，不安装开机服务。
 
+远端端口使用 `18765`，是因为 `.166` 的 `0.0.0.0:8765` 已由现有
+RoboClaw 服务占用；启动脚本不会操作该进程。验证证据和仍需进行的动态遥操、
+独立真值验收见 `docs/piperx_dashboard_hardware_validation_2026-08-11.md`。
+
 也可以手动使用一个 SSH 会话同时承载进程和端口转发：
 
 ```powershell
