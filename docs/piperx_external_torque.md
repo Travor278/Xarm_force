@@ -172,6 +172,26 @@ ssh -o ExitOnForwardFailure=yes `
 本地显示，不会暂停远端采集或遥操。无效估计在图上断线而不是画成零，原因会
 在右侧告警区显示。
 
+### 普通遥操与 Web 联合模式
+
+不要在 EvoStudio 遥操运行时启动上面的纯监控进程。EvoStudio 会管理并重置
+PiperX CAN 接口生命周期，两个独立进程可能在启动阶段冲突。需要同时遥操和
+观察 Web 时，在 Windows 仓库根目录运行：
+
+```powershell
+.\scripts\open_piperx_teleop_monitor.ps1
+```
+
+联合模式在一个进程内为四台机械臂各创建一个 Piper SDK 连接：主臂控制帧发送
+到配对从臂，而从臂同一连接的反馈直接进入力矩估计，不再创建第二个从臂
+SocketCAN 接收者。启动器要求 EvoStudio 状态为 `idle`，随后在可见 SSH 窗口
+中停止 `evostudio-client`；退出时恢复该服务。SSH 和 sudo 可能要求交互输入
+凭据，仓库不保存密码。
+
+启动时保持主从臂静止且姿态接近。任一关节初始差超过 15 度、夹爪超过 10 mm、
+固件低于 `S-V1.8-9`、六轴未使能或反馈不完整时都会拒绝控制。页面在联合模式
+明确显示 `普通遥操 / CONTROL + MONITOR`，不再声称 `RX ONLY`。
+
 ## 已知载荷验证
 
 无接触数据只能证明零残差抑制和重复性，不能证明绝对载荷幅值正确。进入 EvoStudio 集成前必须完成物理已知载荷验证。

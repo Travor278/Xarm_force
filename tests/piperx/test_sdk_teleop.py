@@ -368,3 +368,20 @@ def test_runtime_publishes_two_arms_and_propagates_clean_stop(tmp_path: Path):
     assert set(runtime.snapshot()["arms"]) == {"left", "right"}
     assert not runtime.healthy()
     assert all(sdk.calls[-1] == ("DisconnectPort",) for sdk in sdks.values())
+
+
+def test_runtime_start_surfaces_connect_failure_and_closes_all_sdks(tmp_path: Path):
+    sdks = _sdk_fixture()
+    sdks["can2"].firmware = "S-V1.8-2"
+    runtime = StandaloneTeleopRuntime(
+        _pair_configs(tmp_path),
+        estimators={"left": ZeroEstimator(), "right": ZeroEstimator()},
+        hub=LatestEventHub(queue_size=2),
+        sdk_factory=lambda interface, **_kwargs: sdks[interface],
+    )
+
+    with pytest.raises(TeleopSafetyError, match="below required"):
+        runtime.start()
+
+    assert not runtime.healthy()
+    assert all(sdk.calls[-1] == ("DisconnectPort",) for sdk in sdks.values())

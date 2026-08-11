@@ -21,6 +21,7 @@ let activeJoint = 0;
 let windowSeconds = 20;
 let paused = false;
 let connectionState = 'connecting';
+let runtimeMode = 'receive_only';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -38,6 +39,7 @@ function sampleValue(sample, field, joint, scale = 1) {
 
 function acceptSample(sample) {
   if (sample?.schema !== 'piperx-monitor-v1' || !buffers.has(sample.arm)) return;
+  setRuntimeMode(sample.runtime_mode ?? runtimeMode);
   receivedAt.set(sample.arm, performance.now());
   if (paused) return;
   const normalized = { ...sample, timestampMs: sample.timestamp_ns / 1e6 };
@@ -45,11 +47,20 @@ function acceptSample(sample) {
   latest.set(sample.arm, normalized);
 }
 
+function setRuntimeMode(mode) {
+  runtimeMode = mode === 'standalone_teleop' ? 'standalone_teleop' : 'receive_only';
+  const standalone = runtimeMode === 'standalone_teleop';
+  $('#modeEyebrow').textContent = standalone ? 'STANDALONE TELEOP / SHARED TELEMETRY' : 'PASSIVE TELEMETRY / RECEIVE ONLY';
+  $('#controlMode').textContent = standalone ? '普通遥操 / CONTROL + MONITOR' : '无 / RX ONLY';
+  $('#controlMode').classList.toggle('safe', !standalone);
+}
+
 async function hydrate() {
   try {
     const response = await fetch('/api/snapshot', { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const snapshot = await response.json();
+    setRuntimeMode(snapshot.mode);
     Object.values(snapshot.arms ?? {}).forEach(acceptSample);
   } catch (error) {
     setConnection('error', `快照失败 · ${error.message}`);
@@ -65,7 +76,10 @@ function setConnection(state, label) {
 function connectStream() {
   const source = new EventSource('/stream');
   source.addEventListener('open', () => setConnection('live', '实时连接'));
-  source.addEventListener('ready', () => setConnection('live', '实时连接'));
+  source.addEventListener('ready', (event) => {
+    try { setRuntimeMode(JSON.parse(event.data).mode); } catch { /* status is optional */ }
+    setConnection('live', '实时连接');
+  });
   source.addEventListener('snapshot', (event) => {
     try { acceptSample(JSON.parse(event.data)); setConnection('live', '实时连接'); }
     catch { setConnection('error', '数据格式错误'); }

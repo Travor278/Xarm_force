@@ -542,20 +542,30 @@ class StandaloneTeleopRuntime:
         self._sequences = {name: 0 for name in ordered_names}
         self._lock = threading.Lock()
         self._stop = threading.Event()
+        self._ready = threading.Event()
         self._thread: threading.Thread | None = None
         self._running = False
         self._error: str | None = None
+        self._startup_error: Exception | None = None
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
+        self._ready.clear()
+        self._startup_error = None
         self._thread = threading.Thread(
             target=self._run,
             name="piperx-standalone-teleop-web",
             daemon=True,
         )
         self._thread.start()
+        if not self._ready.wait(timeout=15.0):
+            self.stop()
+            raise TeleopSafetyError("standalone teleop startup timed out")
+        if self._startup_error is not None:
+            self._thread.join(timeout=1.0)
+            raise self._startup_error
 
     def stop(self) -> None:
         self._stop.set()
@@ -570,6 +580,7 @@ class StandaloneTeleopRuntime:
         next_cycle_ns = self.clock_ns()
         try:
             self.coordinator.connect()
+            self._ready.set()
             while not self._stop.is_set():
                 states = self.coordinator.step()
                 now_ns = self.clock_ns()
@@ -594,7 +605,10 @@ class StandaloneTeleopRuntime:
         except Exception as error:
             with self._lock:
                 self._error = f"{type(error).__name__}: {error}"
+                if not self._ready.is_set():
+                    self._startup_error = error
         finally:
+            self._ready.set()
             self.coordinator.close()
             with self._lock:
                 self._running = False
