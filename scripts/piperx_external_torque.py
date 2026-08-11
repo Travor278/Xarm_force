@@ -78,7 +78,11 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("--seconds", type=float, required=True)
     record.add_argument("--output", type=Path, required=True)
     record.add_argument("--group-seconds", type=float, default=2.0)
+    record.add_argument(
+        "--label", choices=("no_contact", "known_load"), default="no_contact"
+    )
     record.add_argument("--confirm-no-contact", action="store_true")
+    record.add_argument("--confirm-known-load", action="store_true")
     _add_base_rpy(record)
 
     fit = subparsers.add_parser("fit", help="fit one arm's no-contact residual artifact")
@@ -291,11 +295,28 @@ def _estimate_rows(estimates: list[Estimate], start_ns: int, group_seconds: floa
     )
 
 
-def _run_record(args: argparse.Namespace) -> int:
-    if not args.confirm_no_contact:
+def _validate_record_confirmation(
+    label: str, *, confirm_no_contact: bool, confirm_known_load: bool
+) -> str:
+    confirmations = int(confirm_no_contact) + int(confirm_known_load)
+    if confirmations != 1:
         raise PiperTorqueCliError(
-            "record refused: add --confirm-no-contact only after removing all external contact/load"
+            "record confirmation must select exactly one of --confirm-no-contact or --confirm-known-load"
         )
+    expected = "no_contact" if confirm_no_contact else "known_load"
+    if label != expected:
+        raise PiperTorqueCliError(
+            f"record confirmation for {expected!r} does not match --label {label!r}"
+        )
+    return label
+
+
+def _run_record(args: argparse.Namespace) -> int:
+    label = _validate_record_confirmation(
+        args.label,
+        confirm_no_contact=args.confirm_no_contact,
+        confirm_known_load=args.confirm_known_load,
+    )
     if args.seconds <= 0:
         raise PiperTorqueCliError("--seconds must be positive")
     dynamics = PinocchioDynamics(args.urdf, base_rpy=args.base_rpy)
@@ -326,7 +347,7 @@ def _run_record(args: argparse.Namespace) -> int:
             "urdf_path": str(dynamics.urdf_path),
             "urdf_sha256": dynamics.urdf_sha256,
             "base_rpy": list(dynamics.base_rpy),
-            "label": "no_contact",
+            "label": label,
             "receive_only": True,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "complete_sample_count": len(estimates),

@@ -116,7 +116,18 @@ python scripts/piperx_external_torque.py monitor \
 |tau_expected| = m * g * r
 ```
 
-方向应根据 URDF 关节轴和施力方向确定。复杂姿态应使用 `tau_expected = J(q)^T F`，而不能只写质量。记录载荷区间时仍使用相同的只读采集路径，但该日志元数据不得标成标定用无接触数据。
+方向应根据 URDF 关节轴和施力方向确定。复杂姿态应使用 `tau_expected = J(q)^T F`，而不能只写质量。载荷就绪后使用同一个只读采集入口，但必须选择 `known_load` 标签和匹配的确认参数，不能把载荷数据标成无接触：
+
+```bash
+python scripts/piperx_external_torque.py record \
+  --arm left \
+  --serial 004B00204148570D20343133 \
+  --urdf /absolute/path/piper_x_description_no_gripper.urdf \
+  --seconds 15 \
+  --output data/left-known-load.npz \
+  --label known_load \
+  --confirm-known-load
+```
 
 评分示例：
 

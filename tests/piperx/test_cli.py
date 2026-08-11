@@ -7,11 +7,14 @@ import sys
 
 from robot_control.piperx.records import TorqueLog, save_torque_log
 from scripts.piperx_external_torque import (
+    PiperTorqueCliError,
+    _validate_record_confirmation,
     build_parser,
     compute_statistics,
     main,
     score_known_load,
 )
+import pytest
 
 
 def _offline_log(count=100, *, measured_offset=0.0, serial="serial-left"):
@@ -82,6 +85,47 @@ def test_record_refuses_to_run_without_explicit_no_contact_confirmation(tmp_path
     )
 
     assert exit_code == 2
+
+
+@pytest.mark.parametrize(
+    ("label", "confirm_no_contact", "confirm_known_load"),
+    [
+        ("no_contact", True, False),
+        ("known_load", False, True),
+    ],
+)
+def test_record_label_requires_matching_explicit_confirmation(
+    label, confirm_no_contact, confirm_known_load
+):
+    assert (
+        _validate_record_confirmation(
+            label,
+            confirm_no_contact=confirm_no_contact,
+            confirm_known_load=confirm_known_load,
+        )
+        == label
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "confirm_no_contact", "confirm_known_load"),
+    [
+        ("no_contact", False, False),
+        ("known_load", False, False),
+        ("known_load", True, False),
+        ("no_contact", False, True),
+        ("no_contact", True, True),
+    ],
+)
+def test_record_label_rejects_missing_wrong_or_ambiguous_confirmation(
+    label, confirm_no_contact, confirm_known_load
+):
+    with pytest.raises(PiperTorqueCliError, match="confirmation"):
+        _validate_record_confirmation(
+            label,
+            confirm_no_contact=confirm_no_contact,
+            confirm_known_load=confirm_known_load,
+        )
 
 
 def test_fit_and_stationary_evaluate_pass_for_zero_no_contact_residual(tmp_path):
