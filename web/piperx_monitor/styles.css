@@ -70,10 +70,10 @@ h2 { margin-bottom: 0; font: 600 20px/1.15 var(--display); letter-spacing: .045e
 .status-rail { display: grid; grid-template-columns: 180px 180px 1fr 1fr; border-bottom: 1px solid var(--line); background: #15191b; }
 .status-cell { min-height: 66px; display: grid; grid-template-columns: 25px auto min-content; grid-template-rows: 20px 27px; column-gap: 7px; padding: 10px 16px; border-right: 1px solid var(--line-soft); }
 .status-cell:last-child { border-right: 0; }
-.status-index { grid-row: 1 / 3; color: #596266; font: 10px/1 var(--mono); padding-top: 2px; }
-.status-cell small { color: var(--muted); font: 9px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
-.status-cell strong { font: 600 22px/1 var(--display); color: var(--paper); align-self: end; }
-.status-cell em { align-self: end; color: var(--muted); font: normal 10px var(--mono); padding-bottom: 2px; }
+.status-index { grid-column: 1; grid-row: 1 / 3; color: #596266; font: 10px/1 var(--mono); padding-top: 2px; }
+.status-cell small { grid-column: 2 / 4; grid-row: 1; color: var(--muted); font: 9px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+.status-cell strong { grid-column: 2; grid-row: 2; font: 600 22px/1 var(--display); color: var(--paper); align-self: end; white-space: nowrap; }
+.status-cell em { grid-column: 3; grid-row: 2; align-self: end; color: var(--muted); font: normal 10px var(--mono); padding-bottom: 2px; white-space: nowrap; }
 .status-cell.wide strong { font-size: 15px; }
 #firmwareCell[data-state="legacy"] strong, #firmwareCell[data-state="unknown"] strong { color: var(--amber); }
 #firmwareCell[data-state="current"] strong { color: var(--cyan); }
