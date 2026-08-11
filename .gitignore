@@ -4,3 +4,5 @@ logs/
 *.npz
 robot_control.egg-info/
 .worktrees/
+.playwright-cli/
+output/
