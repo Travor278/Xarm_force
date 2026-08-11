@@ -40,7 +40,11 @@ def _state(*, firmware="S-V1.9-0") -> PiperState:
     )
 
 
-def _estimate(*, valid=True) -> Estimate:
+def _estimate(*, valid=True, external=None) -> Estimate:
+    if external is None:
+        external = (
+            np.arange(6, dtype=float) - 2 if valid else np.full(6, np.nan)
+        )
     return Estimate(
         interface="can2",
         adapter_serial="serial-left",
@@ -51,7 +55,7 @@ def _estimate(*, valid=True) -> Estimate:
         tau_measured_nm=np.arange(6, dtype=float),
         tau_model_nm=np.arange(6, dtype=float) + 1,
         tau_bias_nm=np.full(6, 0.1),
-        tau_external_nm=(np.arange(6, dtype=float) - 2) if valid else np.full(6, np.nan),
+        tau_external_nm=np.asarray(external, dtype=float),
         valid=valid,
         calibrated=True,
         reason=None if valid else "outside_calibrated_workspace",
@@ -107,6 +111,22 @@ def test_invalid_snapshot_breaks_external_trace_and_sanitizes_nonfinite_values()
     assert payload["reason"] == "outside_calibrated_workspace"
     assert payload["tau_external_nm"] == [None] * 6
     assert payload["tau_model_nm"][2] is None
+    json.dumps(payload, allow_nan=False)
+
+
+def test_workspace_invalid_snapshot_preserves_finite_extrapolated_torque():
+    external = np.linspace(-0.5, 0.5, 6)
+
+    payload = serialize_snapshot(
+        "left",
+        _state(),
+        _estimate(valid=False, external=external),
+        sequence=9,
+    )
+
+    assert payload["valid"] is False
+    assert payload["reason"] == "outside_calibrated_workspace"
+    assert payload["tau_external_nm"] == pytest.approx(external)
     json.dumps(payload, allow_nan=False)
 
 

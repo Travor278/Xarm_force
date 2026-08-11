@@ -100,9 +100,7 @@ def serialize_snapshot(
             np.asarray(state.q_command_rad, dtype=np.float64)
             - np.asarray(state.q_rad, dtype=np.float64)
         )
-    external = (
-        _finite_list(estimate.tau_external_nm) if estimate.valid else [None] * 6
-    )
+    external = _finite_list(estimate.tau_external_nm)
     return {
         "schema": SCHEMA_VERSION,
         "arm": arm_name,
