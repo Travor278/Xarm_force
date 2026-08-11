@@ -358,6 +358,8 @@ class StandaloneTeleopCoordinator:
     def _wait_operator_target(self, endpoint: _Endpoint) -> OperatorTarget:
         for _attempt in range(300):
             try:
+                operator_target(endpoint.sdk)
+                self.sleeper(0.1)
                 return operator_target(endpoint.sdk)
             except TeleopSafetyError:
                 self.sleeper(0.01)
@@ -396,6 +398,7 @@ class StandaloneTeleopCoordinator:
                 follower.sdk.MasterSlaveConfig(0xFC, 0, 0, 0)
             for _config, leader, _follower in pairs:
                 leader.sdk.MasterSlaveConfig(0xFA, 0, 0, 0)
+                leader.sdk.MotionCtrl_1(0x02, 0, 0)
             for config, leader, follower in pairs:
                 target = self._wait_operator_target(leader)
                 follower_q, _follower_mdeg, follower_gripper = self._wait_pose(follower)

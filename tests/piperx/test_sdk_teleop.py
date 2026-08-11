@@ -210,6 +210,9 @@ class FullFakeSdk(FakeSdk):
     def MasterSlaveConfig(self, *args):
         self.calls.append(("MasterSlaveConfig", *args))
 
+    def MotionCtrl_1(self, *args):
+        self.calls.append(("MotionCtrl_1", *args))
+
     def ModeCtrl(self, *args):
         self.calls.append(("ModeCtrl", *args))
 
@@ -290,8 +293,14 @@ def test_coordinator_owns_each_sdk_once_and_shares_follower_feedback(tmp_path: P
         assert sdk.calls[-1] == ("DisconnectPort",)
         assert sdk.calls.count(("SearchPiperFirmwareVersion",)) == 1
     assert ("MasterSlaveConfig", 0xFA, 0, 0, 0) in sdks["can0"].calls
+    assert ("MotionCtrl_1", 0x02, 0, 0) in sdks["can0"].calls
+    assert sdks["can0"].calls.index(("MasterSlaveConfig", 0xFA, 0, 0, 0)) < sdks[
+        "can0"
+    ].calls.index(("MotionCtrl_1", 0x02, 0, 0))
     assert ("MasterSlaveConfig", 0xFC, 0, 0, 0) not in sdks["can0"].calls
     assert ("MasterSlaveConfig", 0xFC, 0, 0, 0) not in sdks["can1"].calls
+    assert not any(call[0] == "MotionCtrl_1" for call in sdks["can2"].calls)
+    assert not any(call[0] == "MotionCtrl_1" for call in sdks["can3"].calls)
     assert ("MasterSlaveConfig", 0xFC, 0, 0, 0) in sdks["can2"].calls
     assert ("ModeCtrl", 1, 1, 10, 0xAD) in sdks["can2"].calls
     assert ("EnableArm", 7, 0x02) in sdks["can2"].calls
