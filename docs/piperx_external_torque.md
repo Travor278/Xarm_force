@@ -106,6 +106,68 @@ python scripts/piperx_external_torque.py monitor \
 
 屏幕值限制在显示范围内，NPZ 中的原始量不裁剪。`valid=false` 时必须同时检查 `reason`，不能把显示数值当成有效测量。
 
+## 实时网页仪表盘
+
+网页监控与终端 `monitor` 使用相同的只读估计器，但增加了高速电流、SDK
+固定系数换算的 effort、低速电机/FOC 温度、驱动状态、遥操目标关节角和
+被动观察到的固件版本。服务仅绑定 `.166` 的 `127.0.0.1`，浏览器通过
+SSH 本地转发访问；不会在局域网开放端口。
+
+`.166` 上的完整启动参数为：
+
+```bash
+cd /home/dell/piperx-force-validation
+/home/dell/anaconda3/bin/conda run --no-capture-output -n evo-rl \
+  python scripts/piperx_torque_web.py \
+  --urdf /home/dell/Evo-RL.before-pr-sync/src/lerobot/assets/piper_x_description/urdf/piper_x_description_no_gripper.urdf \
+  --arm left,004B00204148570D20343133,calibration/left.json \
+  --arm right,003F002D4148571320343133,calibration/right.json \
+  --host 127.0.0.1 --port 8765 --ui-rate 50
+```
+
+推荐从 Windows 仓库根目录直接运行：
+
+```powershell
+.\scripts\open_piperx_monitor.ps1
+```
+
+脚本在可见 SSH 窗口中启动远端监控并建立
+`127.0.0.1:8765 -> .166:127.0.0.1:8765` 转发，随后打开
+`http://127.0.0.1:8765`。脚本和仓库不保存密码；首次连接需要在 SSH
+窗口中输入凭据。关闭该 SSH 窗口或按 `Ctrl+C` 会同时停止转发和本次远端
+监控，不安装开机服务。
+
+也可以手动使用一个 SSH 会话同时承载进程和端口转发：
+
+```powershell
+ssh -o ExitOnForwardFailure=yes `
+  -L 8765:127.0.0.1:8765 dell@192.168.105.166 `
+  "cd /home/dell/piperx-force-validation && exec /home/dell/anaconda3/bin/conda run --no-capture-output -n evo-rl python scripts/piperx_torque_web.py --urdf /home/dell/Evo-RL.before-pr-sync/src/lerobot/assets/piper_x_description/urdf/piper_x_description_no_gripper.urdf --arm left,004B00204148570D20343133,calibration/left.json --arm right,003F002D4148571320343133,calibration/right.json --host 127.0.0.1 --port 8765 --ui-rate 50"
+```
+
+只读诊断端点：
+
+| 路径 | 内容 |
+|---|---|
+| `/healthz` | 服务和两条采集线程是否存活 |
+| `/api/status` | 接口、序列号、序列计数和错误 |
+| `/api/snapshot` | 两臂最新严格 JSON 快照 |
+| `/stream` | 浏览器使用的 SSE 实时流 |
+
+网页中的 `电流换算力矩（参考）` 不是独立关节扭矩传感器。Piper 官方 SDK
+将反馈电流乘固定系数得到 effort；官方 Q&A 还说明底层固件 `1.8-2` 及更早
+版本的 J1-J3 需要额外乘 4。监控本身不发送固件查询，也不会在固件未知时
+静默改变标定。页面显示 `固件未知` 或 `旧固件` 时，应先核对版本和重新验收
+力矩比例。
+
+`趋势相关性（非精度）` 是最近窗口中 effort 与外力矩估计的 Pearson 相关系数。
+两者共享电流输入，因此只能辅助观察趋势、符号、换向和异常，不能证明绝对
+精度。绝对准确性仍需六维力传感器、拉压力计或已知载荷提供独立真值。
+
+常用界面操作：数字键 `1`–`6` 选择关节，`L`/`R` 选择从臂；PAUSE 只冻结
+本地显示，不会暂停远端采集或遥操。无效估计在图上断线而不是画成零，原因会
+在右侧告警区显示。
+
 ## 已知载荷验证
 
 无接触数据只能证明零残差抑制和重复性，不能证明绝对载荷幅值正确。进入 EvoStudio 集成前必须完成物理已知载荷验证。
