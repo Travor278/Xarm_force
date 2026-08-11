@@ -170,6 +170,14 @@ def _metadata_identity(log: TorqueLog) -> tuple[str, str, tuple[float, float, fl
     return serial, urdf_hash, base_rpy
 
 
+def _require_log_label(log: TorqueLog, expected: str, command: str) -> None:
+    actual = log.metadata.get("label")
+    if actual != expected:
+        raise PiperTorqueCliError(
+            f"{command} requires log label {expected!r}, got {actual!r}"
+        )
+
+
 def _replay_external(
     log: TorqueLog, artifact: CalibrationArtifact
 ) -> tuple[np.ndarray, int, int]:
@@ -223,6 +231,7 @@ def _run_fit(args: argparse.Namespace) -> int:
 
 def _run_evaluate(args: argparse.Namespace) -> int:
     log = load_torque_log(args.input)
+    _require_log_label(log, "no_contact", "evaluate")
     artifact = CalibrationArtifact.load(args.calibration)
     external, source_count, invalid_workspace = _replay_external(log, artifact)
     statistics = compute_statistics(external)
@@ -260,6 +269,7 @@ def _parse_expected(value: str) -> np.ndarray:
 
 def _run_known_load(args: argparse.Namespace) -> int:
     log = load_torque_log(args.input)
+    _require_log_label(log, "known_load", "known-load")
     artifact = CalibrationArtifact.load(args.calibration)
     external, source_count, invalid_workspace = _replay_external(log, artifact)
     report = score_known_load(external, _parse_expected(args.expected_torque))

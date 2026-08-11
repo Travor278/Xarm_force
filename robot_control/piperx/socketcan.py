@@ -16,6 +16,7 @@ from .protocol import HighSpeedSample, decode_frame
 
 
 CAN_EFF_MASK = 0x1FFFFFFF
+CAN_FRAME_FLAGS = 0xE0000000
 _CAN_FRAME = struct.Struct("=IB3x8s")
 
 
@@ -112,10 +113,13 @@ class ReadOnlySocketCan:
         raw_can_id, data_length, payload = _CAN_FRAME.unpack(packet)
         if data_length > 8:
             raise CanReceiveError(f"invalid CAN payload length {data_length}")
+        timestamp_ns = self._clock_ns()
+        if raw_can_id & CAN_FRAME_FLAGS:
+            return CanFrame(can_id=-1, payload=b"", timestamp_ns=timestamp_ns)
         return CanFrame(
             can_id=raw_can_id & CAN_EFF_MASK,
             payload=payload[:data_length],
-            timestamp_ns=self._clock_ns(),
+            timestamp_ns=timestamp_ns,
         )
 
     def close(self) -> None:

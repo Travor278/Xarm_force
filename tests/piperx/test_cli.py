@@ -194,6 +194,52 @@ def test_evaluate_rejects_adapter_metadata_mismatch(tmp_path):
     )
 
 
+def test_evaluate_rejects_known_load_label(tmp_path):
+    source = tmp_path / "source.npz"
+    loaded = tmp_path / "loaded.npz"
+    artifact = tmp_path / "left.json"
+    save_torque_log(source, _offline_log())
+    loaded_log = _offline_log()
+    loaded_log.metadata["label"] = "known_load"
+    save_torque_log(loaded, loaded_log)
+    assert main(["fit", "--input", str(source), "--output", str(artifact)]) == 0
+
+    assert (
+        main(
+            [
+                "evaluate",
+                "--input",
+                str(loaded),
+                "--calibration",
+                str(artifact),
+            ]
+        )
+        == 2
+    )
+
+
+def test_known_load_rejects_no_contact_label(tmp_path):
+    source = tmp_path / "source.npz"
+    artifact = tmp_path / "left.json"
+    save_torque_log(source, _offline_log())
+    assert main(["fit", "--input", str(source), "--output", str(artifact)]) == 0
+
+    assert (
+        main(
+            [
+                "known-load",
+                "--input",
+                str(source),
+                "--calibration",
+                str(artifact),
+                "--expected-torque",
+                "0,0,0,0,0,0",
+            ]
+        )
+        == 2
+    )
+
+
 def test_statistics_report_literal_per_joint_errors():
     values = np.array([[1.0] * 6, [-1.0] * 6, [0.0] * 6])
 

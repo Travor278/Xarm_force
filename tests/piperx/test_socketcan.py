@@ -84,7 +84,7 @@ class _ReceiveSocket:
 
 
 def test_socketcan_reader_unpacks_one_frame_without_transmitting():
-    packet = struct.pack("=IB3x8s", 0x80000000 | 0x251, 8, bytes.fromhex("03e8000100000000"))
+    packet = struct.pack("=IB3x8s", 0x251, 8, bytes.fromhex("03e8000100000000"))
     fake = _ReceiveSocket(packet)
     factory_args = []
 
@@ -115,6 +115,20 @@ def test_socketcan_reader_rejects_truncated_kernel_frame():
 
     with pytest.raises(CanReceiveError, match="16 bytes"):
         reader.recv_frame()
+
+
+@pytest.mark.parametrize("flag", [0x80000000, 0x40000000, 0x20000000])
+def test_socketcan_reader_ignores_extended_rtr_and_error_frames(flag):
+    packet = struct.pack("=IB3x8s", flag | 0x251, 8, bytes(8))
+    reader = ReadOnlySocketCan(
+        "can2", socket_factory=lambda *_: _ReceiveSocket(packet), clock_ns=lambda: 99
+    )
+
+    frame = reader.recv_frame()
+
+    assert frame.can_id == -1
+    assert frame.payload == b""
+    assert frame.timestamp_ns == 99
 
 
 def _position_payload(first_mdeg: int, second_mdeg: int) -> bytes:
