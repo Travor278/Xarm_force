@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   RingBuffer,
   driverAlarms,
+  medianFinite,
   pearsonCorrelation,
   sampleAgeState,
   traceSegments,
@@ -72,4 +73,10 @@ test('driverAlarms reports official Piper status and stale telemetry', () => {
   ]);
 
   assert.deepEqual(alarms, ['J1 碰撞保护', 'J1 驱动错误', 'J2 驱动遥测过期', 'J2 过流', 'J2 未使能']);
+});
+
+
+test('medianFinite stabilizes instantaneous rate outliers', () => {
+  assert.equal(medianFinite([200, 157, null, 201, 199]), 199.5);
+  assert.equal(medianFinite([null, Number.NaN]), null);
 });

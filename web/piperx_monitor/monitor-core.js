@@ -83,6 +83,16 @@ export function sampleAgeState(ageMs) {
 }
 
 
+export function medianFinite(values) {
+  const finite = values.filter(Number.isFinite).sort((left, right) => left - right);
+  if (!finite.length) return null;
+  const middle = Math.floor(finite.length / 2);
+  return finite.length % 2
+    ? finite[middle]
+    : (finite[middle - 1] + finite[middle]) / 2;
+}
+
+
 export function driverAlarms(drivers) {
   const alarms = [];
   for (let index = 0; index < (drivers?.length ?? 0); index += 1) {

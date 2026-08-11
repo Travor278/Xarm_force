@@ -1,6 +1,7 @@
 import {
   RingBuffer,
   driverAlarms,
+  medianFinite,
   pearsonCorrelation,
   sampleAgeState,
   traceSegments,
@@ -176,8 +177,14 @@ function drawAllCharts() {
 function updateStatus() {
   const now = performance.now();
   for (const arm of arms) {
-    const sample = latest.get(arm);
-    $(`#${arm}Rate`).textContent = fixed(sample?.frequency_hz, 0);
+    const samples = buffers.get(arm).values();
+    const end = samples.at(-1)?.timestampMs ?? 0;
+    const rate = medianFinite(
+      samples
+        .filter((item) => item.timestampMs >= end - 1000)
+        .map((item) => item.frequency_hz),
+    );
+    $(`#${arm}Rate`).textContent = fixed(rate, 0);
   }
   const sample = latest.get(activeArm);
   const age = receivedAt.has(activeArm) ? now - receivedAt.get(activeArm) : Number.POSITIVE_INFINITY;
