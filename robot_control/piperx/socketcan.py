@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, replace
 from pathlib import Path
 import re
@@ -203,7 +204,7 @@ class PiperStateAssembler:
         self._position_timestamps = np.zeros(3, dtype=np.int64)
         self._motor_timestamps = np.zeros(6, dtype=np.int64)
         self._last_state: PiperState | None = None
-        self._previous_emit_ns: int | None = None
+        self._emit_timestamps: deque[int] = deque(maxlen=512)
 
     def update(self, can_id: int, payload: bytes, timestamp_ns: int) -> PiperState | None:
         decoded = decode_frame(can_id, payload)
@@ -270,8 +271,14 @@ class PiperStateAssembler:
             <= self.auxiliary_stale_after_ns
         )
         frequency_hz = None
-        if self._previous_emit_ns is not None and emit_ns > self._previous_emit_ns:
-            frequency_hz = 1e9 / (emit_ns - self._previous_emit_ns)
+        self._emit_timestamps.append(emit_ns)
+        cutoff_ns = emit_ns - 1_000_000_000
+        while len(self._emit_timestamps) > 1 and self._emit_timestamps[0] < cutoff_ns:
+            self._emit_timestamps.popleft()
+        if len(self._emit_timestamps) > 1:
+            span_ns = self._emit_timestamps[-1] - self._emit_timestamps[0]
+            if span_ns > 0:
+                frequency_hz = 1e9 * (len(self._emit_timestamps) - 1) / span_ns
         state = PiperState(
             interface=self.interface,
             adapter_serial=self.adapter_serial,
@@ -296,7 +303,6 @@ class PiperStateAssembler:
         )
         self._emitted_position_revision[:] = self._position_revision
         self._emitted_motor_revision[:] = self._motor_revision
-        self._previous_emit_ns = emit_ns
         self._last_state = state
         return state
 

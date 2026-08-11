@@ -238,6 +238,17 @@ def test_missing_auxiliary_feedback_is_explicitly_unavailable():
     assert state.firmware is None
 
 
+def test_assembler_reports_windowed_rate_instead_of_last_interval_jitter():
+    assembler = PiperStateAssembler("can2", "serial-left", max_skew_ns=20)
+    starts = [1_000_000_000, 1_004_000_000, 1_009_000_000, 1_015_000_000]
+
+    for start in starts:
+        state = _feed_complete_cycle(assembler, start)
+
+    assert state is not None
+    assert state.frequency_hz == pytest.approx(200.0, rel=1e-6)
+
+
 def test_assembler_waits_for_a_coherent_set_after_excessive_skew():
     assembler = PiperStateAssembler("can2", "serial-left", max_skew_ns=10)
     for index, can_id in enumerate((0x2A5, 0x2A6, 0x2A7)):
