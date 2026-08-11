@@ -60,6 +60,15 @@ export function pearsonCorrelation(xs, ys, { minSamples = 20, minVariance = 1e-1
 }
 
 
+export function estimateDisplayState(sample) {
+  const hasFiniteExternal = sample?.tau_external_nm?.some(Number.isFinite) === true;
+  if (!hasFiniteExternal) return 'unavailable';
+  if (sample?.valid === true) return 'valid';
+  if (sample?.reason === 'outside_calibrated_workspace') return 'extrapolated';
+  return 'unavailable';
+}
+
+
 export function traceSegments(points) {
   const segments = [];
   let segment = [];

@@ -1,6 +1,7 @@
 import {
   RingBuffer,
   driverAlarms,
+  estimateDisplayState,
   medianFinite,
   pearsonCorrelation,
   sampleAgeState,
@@ -9,6 +10,7 @@ import {
 
 const COLORS = {
   external: '#55d8d0', effort: '#ff6b4a', model: '#f0bb52',
+  extrapolated: '#f0bb52',
   position: '#5e91d8', velocity: '#c6dc72', current: '#ff6b4a', tracking: '#b77bd7',
   grid: '#2d3539', text: '#748084', zero: '#465156',
 };
@@ -156,6 +158,7 @@ function drawChart(canvas, traces, { symmetric = false, decimals = 2 } = {}) {
   for (const trace of traces) {
     if (!trace.visible) continue;
     ctx.strokeStyle = trace.color; ctx.lineWidth = trace.width ?? 1.5;
+    ctx.setLineDash(trace.dash ?? []);
     ctx.shadowColor = trace.color; ctx.shadowBlur = trace.glow ?? 0;
     for (const segment of traceSegments(trace.points)) {
       ctx.beginPath();
@@ -163,22 +166,36 @@ function drawChart(canvas, traces, { symmetric = false, decimals = 2 } = {}) {
       ctx.stroke();
     }
   }
+  ctx.setLineDash([]);
   ctx.restore();
 }
 
-function tracePoints(samples, field, scale = 1, requireValid = false) {
+function tracePoints(samples, field, scale = 1, requireEstimate = false) {
   return samples.map((sample) => ({
     x: sample.timestampMs,
     y: sampleValue(sample, field, activeJoint, scale),
-    valid: !requireValid || sample.valid,
+    valid: !requireEstimate || estimateDisplayState(sample) !== 'unavailable',
   }));
 }
 
 function drawAllCharts() {
   const samples = visibleSamples();
+  const estimateSamples = samples.filter(
+    (sample) => estimateDisplayState(sample) !== 'unavailable',
+  );
+  const extrapolatedOnly = estimateSamples.length > 0 && estimateSamples.every(
+    (sample) => estimateDisplayState(sample) === 'extrapolated',
+  );
   const traceEnabled = Object.fromEntries($$('[data-trace]').map((input) => [input.dataset.trace, input.checked]));
   drawChart(canvases.torque, [
-    { points: tracePoints(samples, 'tau_external_nm', 1, true), color: COLORS.external, visible: traceEnabled.external, width: 2.1, glow: 3 },
+    {
+      points: tracePoints(samples, 'tau_external_nm', 1, true),
+      color: extrapolatedOnly ? COLORS.extrapolated : COLORS.external,
+      visible: traceEnabled.external,
+      width: 2.1,
+      glow: extrapolatedOnly ? 1 : 3,
+      dash: extrapolatedOnly ? [7, 5] : [],
+    },
     { points: tracePoints(samples, 'tau_effort_nm'), color: COLORS.effort, visible: traceEnabled.effort },
     { points: tracePoints(samples, 'tau_model_nm'), color: COLORS.model, visible: traceEnabled.model },
   ], { symmetric: true, decimals: 2 });
@@ -203,10 +220,19 @@ function updateStatus() {
   const sample = latest.get(activeArm);
   const age = receivedAt.has(activeArm) ? now - receivedAt.get(activeArm) : Number.POSITIVE_INFINITY;
   const ageState = sampleAgeState(age);
-  $('#estimateState').textContent = !sample ? '等待数据' : sample.valid ? 'VALID / 已标定' : `INVALID / ${sample.reason ?? '未知原因'}`;
-  $('#estimateState').style.color = sample?.valid ? 'var(--cyan)' : 'var(--danger)';
+  const displayState = estimateDisplayState(sample);
+  const stateText = {
+    valid: 'VALID / 已标定',
+    extrapolated: 'EXTRAPOLATED / 标定区外趋势',
+    unavailable: sample ? `UNAVAILABLE / ${sample.reason ?? '未知原因'}` : '等待数据',
+  };
+  const stateColor = { valid: 'var(--cyan)', extrapolated: 'var(--amber)', unavailable: 'var(--danger)' };
+  $('#estimateState').textContent = stateText[displayState];
+  $('#estimateState').style.color = stateColor[displayState];
   $('#sampleAge').textContent = Number.isFinite(age) ? `${age.toFixed(0)} ms` : '-- ms';
-  $('#invalidStamp').classList.toggle('visible', Boolean(sample && !sample.valid));
+  $('#invalidStamp').textContent = displayState === 'extrapolated' ? 'TORQUE EXTRAPOLATED' : 'ESTIMATE UNAVAILABLE';
+  $('#invalidStamp').classList.toggle('visible', Boolean(sample && displayState !== 'valid'));
+  $('#invalidStamp').classList.toggle('extrapolated', displayState === 'extrapolated');
   if (connectionState === 'live' && ageState === 'critical') setConnection('error', '遥测超时');
 
   const firmware = sample?.firmware ?? { status: 'unknown', version: null, scale_verified: false };
@@ -222,7 +248,9 @@ function updateStatus() {
 }
 
 function updateCorrelation() {
-  const samples = visibleSamples().filter((sample) => sample.valid);
+  const samples = visibleSamples().filter(
+    (sample) => estimateDisplayState(sample) !== 'unavailable',
+  );
   const effort = samples.map((sample) => sampleValue(sample, 'tau_effort_nm', activeJoint));
   const external = samples.map((sample) => sampleValue(sample, 'tau_external_nm', activeJoint));
   const correlation = pearsonCorrelation(effort, external);
@@ -238,11 +266,26 @@ function updateMatrix() {
   const rows = [];
   for (const arm of arms) {
     const sample = latest.get(arm);
+    const displayState = estimateDisplayState(sample);
     for (let joint = 0; joint < 6; joint += 1) {
       const driver = sample?.driver?.[joint];
-      const valid = Boolean(sample?.valid && driver?.fresh !== false);
-      const stateClass = !sample ? 'waiting' : valid ? '' : 'invalid';
-      const state = !sample ? 'WAIT' : sample.valid ? driver?.fresh === false ? 'STALE' : 'VALID' : 'INVALID';
+      const driverFresh = driver?.fresh !== false;
+      const state = !sample
+        ? 'WAIT'
+        : !driverFresh
+          ? 'STALE'
+          : displayState === 'valid'
+            ? 'VALID'
+            : displayState === 'extrapolated'
+              ? 'EXTRAP'
+              : 'INVALID';
+      const stateClass = !sample
+        ? 'waiting'
+        : state === 'EXTRAP'
+          ? 'extrapolated'
+          : state === 'VALID'
+            ? ''
+            : 'invalid';
       rows.push(`<tr>
         <td><span class="arm-label ${arm}">${arm.toUpperCase()}</span></td><td>J${joint + 1}</td>
         <td>${rowValue(sample, 'tau_external_nm', joint)}</td><td>${rowValue(sample, 'tau_effort_nm', joint)}</td>
@@ -257,12 +300,25 @@ function updateMatrix() {
 function updateAlarms() {
   const sample = latest.get(activeArm);
   const alarms = sample ? driverAlarms(sample.driver) : ['等待遥测数据'];
-  if (sample && !sample.valid) alarms.unshift(`估计无效：${sample.reason ?? '未知原因'}`);
+  const displayState = estimateDisplayState(sample);
+  if (sample && displayState === 'extrapolated') {
+    alarms.unshift('外推趋势：超出标定工作区，绝对值未验收');
+  } else if (sample && displayState === 'unavailable') {
+    alarms.unshift(`估计不可用：${sample.reason ?? '未知原因'}`);
+  }
   if (sample?.firmware?.status === 'unknown') alarms.push('固件未知：电流换算比例未核对');
   if (sample?.firmware?.status === 'legacy') alarms.push('旧固件：J1–J3 effort 需要额外 ×4 核对');
+  const hasHardAlarms = alarms.some((alarm) => !alarm.startsWith('外推趋势'));
   $('#alarmCount').textContent = sample ? String(alarms.length) : '0';
-  $('#alarmCount').classList.toggle('has-alarms', Boolean(sample && alarms.length));
-  $('#alarmList').innerHTML = alarms.map((alarm) => `<li class="${sample ? '' : 'empty'}">${alarm}</li>`).join('');
+  $('#alarmCount').classList.toggle('has-alarms', Boolean(sample && hasHardAlarms));
+  $('#alarmCount').classList.toggle(
+    'has-warnings',
+    Boolean(sample && displayState === 'extrapolated' && !hasHardAlarms),
+  );
+  $('#alarmList').innerHTML = alarms.map((alarm) => {
+    const stateClass = !sample ? 'empty' : alarm.startsWith('外推趋势') ? 'warning' : '';
+    return `<li class="${stateClass}">${alarm}</li>`;
+  }).join('');
 }
 
 function selectArm(arm) {

@@ -4,11 +4,37 @@ import assert from 'node:assert/strict';
 import {
   RingBuffer,
   driverAlarms,
+  estimateDisplayState,
   medianFinite,
   pearsonCorrelation,
   sampleAgeState,
   traceSegments,
 } from '../../web/piperx_monitor/monitor-core.js';
+
+
+test('estimateDisplayState separates valid extrapolated and unavailable samples', () => {
+  assert.equal(estimateDisplayState({ valid: true, tau_external_nm: [1] }), 'valid');
+  assert.equal(
+    estimateDisplayState({
+      valid: false,
+      reason: 'outside_calibrated_workspace',
+      tau_external_nm: [1],
+    }),
+    'extrapolated',
+  );
+  assert.equal(
+    estimateDisplayState({ valid: false, reason: 'stale_feedback', tau_external_nm: [1] }),
+    'unavailable',
+  );
+  assert.equal(
+    estimateDisplayState({
+      valid: false,
+      reason: 'outside_calibrated_workspace',
+      tau_external_nm: [null],
+    }),
+    'unavailable',
+  );
+});
 
 
 test('RingBuffer evicts samples outside duration and point bounds', () => {

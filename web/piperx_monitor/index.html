@@ -81,19 +81,19 @@
             <h2 id="torqueTitle">关节力矩时间轴</h2>
           </div>
           <div class="trace-legend" aria-label="曲线开关">
-            <label class="trace-toggle external"><input type="checkbox" data-trace="external" checked><span></span>外力矩估计</label>
-            <label class="trace-toggle effort"><input type="checkbox" data-trace="effort" checked><span></span>电流换算力矩</label>
+            <label class="trace-toggle external"><input type="checkbox" data-trace="external" checked><span></span>外力矩估计 / 外推</label>
+            <label class="trace-toggle effort"><input type="checkbox" data-trace="effort" checked><span></span>电流换算力矩代理</label>
             <label class="trace-toggle model"><input type="checkbox" data-trace="model" checked><span></span>动力学模型</label>
           </div>
         </div>
         <div class="canvas-wrap main-canvas">
           <canvas id="torqueCanvas" aria-label="力矩实时曲线"></canvas>
           <div class="unit-tag">N·m</div>
-          <div class="invalid-stamp" id="invalidStamp">ESTIMATE INVALID</div>
+          <div class="invalid-stamp" id="invalidStamp">ESTIMATE UNAVAILABLE</div>
         </div>
         <div class="scope-readout">
-          <div><small>τ EXT</small><strong id="externalNow">--</strong><span>N·m</span></div>
-          <div><small>τ EFFORT</small><strong id="effortNow">--</strong><span>N·m</span></div>
+          <div><small>τ EXT / EXTRAP</small><strong id="externalNow">--</strong><span>N·m</span></div>
+          <div><small>τ EFFORT PROXY</small><strong id="effortNow">--</strong><span>N·m</span></div>
           <div><small>τ MODEL</small><strong id="modelNow">--</strong><span>N·m</span></div>
           <div><small>CURRENT</small><strong id="currentNow">--</strong><span>A</span></div>
         </div>
@@ -119,7 +119,7 @@
           <strong id="correlationValue">--</strong><small>ρ</small>
         </div>
         <div class="correlation-scale"><span>-1 反向</span><span>0</span><span>+1 同向</span></div>
-        <p class="truth-warning">电流换算力矩与估计量共享电流来源。相关只表示趋势，不是独立真值，也不能证明绝对精度。</p>
+        <p class="truth-warning">电流换算力矩代理与估计量共享电流来源。相关只表示趋势，不是独立真值，也不能证明绝对精度。</p>
       </article>
 
       <article class="alarm-card panel">
@@ -142,11 +142,11 @@
     <section class="joint-matrix panel" aria-labelledby="matrixTitle">
       <div class="matrix-heading">
         <div><p class="kicker">ALL CHANNELS / LATEST SAMPLE</p><h2 id="matrixTitle">双臂六关节快照</h2></div>
-        <div class="matrix-key"><span class="valid-key"></span>有效 <span class="invalid-key"></span>无效或过期</div>
+        <div class="matrix-key"><span class="valid-key"></span>有效 <span class="extrapolated-key"></span>外推趋势 <span class="invalid-key"></span>不可用或过期</div>
       </div>
       <div class="table-scroll">
         <table>
-          <thead><tr><th>ARM</th><th>JOINT</th><th>τ EXT <i>N·m</i></th><th>τ EFFORT <i>N·m</i></th><th>CURRENT <i>A</i></th><th>Q <i>deg</i></th><th>Q̇ <i>rad/s</i></th><th>MOTOR <i>°C</i></th><th>FOC <i>°C</i></th><th>STATE</th></tr></thead>
+          <thead><tr><th>ARM</th><th>JOINT</th><th>τ EXT / EXTRAP <i>N·m</i></th><th>τ EFFORT PROXY <i>N·m</i></th><th>CURRENT <i>A</i></th><th>Q <i>deg</i></th><th>Q̇ <i>rad/s</i></th><th>MOTOR <i>°C</i></th><th>FOC <i>°C</i></th><th>STATE</th></tr></thead>
           <tbody id="jointTableBody"></tbody>
         </table>
       </div>
