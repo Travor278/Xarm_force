@@ -31,15 +31,27 @@ Write-Host "Starting standalone PiperX teleop + torque dashboard..." -Foreground
 Write-Host "Keep both leader and follower arms still until alignment passes." -ForegroundColor Yellow
 Write-Host "SSH and sudo may request credentials in the visible window." -ForegroundColor DarkGray
 
-$escapedRemote = $remoteCommand.Replace('"', '\"')
 $sshArguments = @(
     "-tt",
     "-o", "ExitOnForwardFailure=yes",
     "-L", $forward,
     $destination,
-    "`"$escapedRemote`""
+    $remoteCommand
 )
-$sshProcess = Start-Process -FilePath "ssh.exe" -ArgumentList $sshArguments -PassThru
+$quotedSshArguments = $sshArguments | ForEach-Object {
+    "'" + $_.Replace("'", "''") + "'"
+}
+$consoleScript = @"
+`$Host.UI.RawUI.WindowTitle = 'PiperX standalone teleop'
+& ssh.exe $($quotedSshArguments -join ' ')
+exit `$LASTEXITCODE
+"@
+$encodedCommand = [Convert]::ToBase64String(
+    [Text.Encoding]::Unicode.GetBytes($consoleScript)
+)
+$sshProcess = Start-Process -FilePath "powershell.exe" `
+    -ArgumentList @("-NoLogo", "-NoProfile", "-EncodedCommand", $encodedCommand) `
+    -WindowStyle Normal -PassThru
 
 $url = "http://127.0.0.1:$LocalPort"
 $healthUrl = "$url/healthz"

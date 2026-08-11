@@ -78,5 +78,8 @@ def test_remote_wrapper_has_exclusive_controller_and_cleanup_guards():
     assert "conda run" not in combined
     assert "run_piperx_teleop_web_remote.sh" in launcher
     assert "-tt" in launcher
+    assert 'Start-Process -FilePath "powershell.exe"' in launcher
+    assert "-EncodedCommand" in launcher
+    assert "-WindowStyle Normal" in launcher
     assert "password=" not in combined.lower()
     assert "-pw " not in combined.lower()
