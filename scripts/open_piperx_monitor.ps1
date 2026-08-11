@@ -3,7 +3,7 @@ param(
     [string]$RemoteHost = "192.168.105.166",
     [string]$RemoteUser = "dell",
     [ValidateRange(1, 65535)][int]$LocalPort = 8765,
-    [ValidateRange(1, 65535)][int]$RemotePort = 8765,
+    [ValidateRange(1, 65535)][int]$RemotePort = 18765,
     [switch]$NoBrowser,
     [switch]$PrintOnly
 )

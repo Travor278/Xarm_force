@@ -398,7 +398,7 @@ starting.
 
 - [ ] **Step 5: Start loopback service and validate through SSH**
 
-Start the remote process on `127.0.0.1:8765`, write PID/log files, open a local
+Start the remote process on `127.0.0.1:18765`, write PID/log files, open a local
 SSH forward, and check `/healthz`, `/api/status`, `/api/snapshot`, and `/stream`.
 Confirm both arms emit q, qd, signed current, current-derived effort, model,
 bias, external estimate, temperatures, and status at the requested UI rate.

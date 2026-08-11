@@ -20,7 +20,7 @@ their correlation as absolute accuracy.
 Use a remote FastAPI/uvicorn service with a server-sent-events (SSE) stream and
 static HTML/CSS/JavaScript assets. SSE is one-way by construction, reconnects
 natively in browsers, and is sufficient because the web application has no
-control action. The service binds to `127.0.0.1:8765`; the documented access
+control action. The service binds to `127.0.0.1:18765`; the documented access
 path is:
 
 ```text
@@ -198,7 +198,7 @@ The Windows-side documented flow is two terminals:
 
 ```powershell
 ssh dell@192.168.105.166 "<start loopback monitor command>"
-ssh -N -L 8765:127.0.0.1:8765 dell@192.168.105.166
+ssh -N -L 8765:127.0.0.1:18765 dell@192.168.105.166
 ```
 
 Then open `http://127.0.0.1:8765`. The start command and an optional local

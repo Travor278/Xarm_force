@@ -122,7 +122,7 @@ cd /home/dell/piperx-force-validation
   --urdf /home/dell/Evo-RL.before-pr-sync/src/lerobot/assets/piper_x_description/urdf/piper_x_description_no_gripper.urdf \
   --arm left,004B00204148570D20343133,calibration/left.json \
   --arm right,003F002D4148571320343133,calibration/right.json \
-  --host 127.0.0.1 --port 8765 --ui-rate 50
+  --host 127.0.0.1 --port 18765 --ui-rate 50
 ```
 
 推荐从 Windows 仓库根目录直接运行：
@@ -132,7 +132,7 @@ cd /home/dell/piperx-force-validation
 ```
 
 脚本在可见 SSH 窗口中启动远端监控并建立
-`127.0.0.1:8765 -> .166:127.0.0.1:8765` 转发，随后打开
+`127.0.0.1:8765 -> .166:127.0.0.1:18765` 转发，随后打开
 `http://127.0.0.1:8765`。脚本和仓库不保存密码；首次连接需要在 SSH
 窗口中输入凭据。关闭该 SSH 窗口或按 `Ctrl+C` 会同时停止转发和本次远端
 监控，不安装开机服务。
@@ -141,8 +141,8 @@ cd /home/dell/piperx-force-validation
 
 ```powershell
 ssh -o ExitOnForwardFailure=yes `
-  -L 8765:127.0.0.1:8765 dell@192.168.105.166 `
-  "cd /home/dell/piperx-force-validation && exec /home/dell/anaconda3/bin/conda run --no-capture-output -n evo-rl python scripts/piperx_torque_web.py --urdf /home/dell/Evo-RL.before-pr-sync/src/lerobot/assets/piper_x_description/urdf/piper_x_description_no_gripper.urdf --arm left,004B00204148570D20343133,calibration/left.json --arm right,003F002D4148571320343133,calibration/right.json --host 127.0.0.1 --port 8765 --ui-rate 50"
+  -L 8765:127.0.0.1:18765 dell@192.168.105.166 `
+  "cd /home/dell/piperx-force-validation && exec /home/dell/anaconda3/bin/conda run --no-capture-output -n evo-rl python scripts/piperx_torque_web.py --urdf /home/dell/Evo-RL.before-pr-sync/src/lerobot/assets/piper_x_description/urdf/piper_x_description_no_gripper.urdf --arm left,004B00204148570D20343133,calibration/left.json --arm right,003F002D4148571320343133,calibration/right.json --host 127.0.0.1 --port 18765 --ui-rate 50"
 ```
 
 只读诊断端点：
