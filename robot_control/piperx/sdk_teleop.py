@@ -255,22 +255,6 @@ def _feedback_pose(interface: object) -> tuple[tuple[float, ...], tuple[int, ...
     return q_rad, joint_mdeg, gripper_mm
 
 
-def _target_from_feedback(
-    q_rad: tuple[float, ...],
-    joint_mdeg: tuple[int, ...],
-    gripper_mm: float,
-    timestamp_s: float,
-) -> OperatorTarget:
-    return OperatorTarget(
-        timestamp_s=timestamp_s,
-        frequency_hz=1.0,
-        joint_mdeg=joint_mdeg,
-        q_rad=q_rad,
-        gripper_um=int(round(gripper_mm * 1000.0)),
-        gripper_mm=gripper_mm,
-    )
-
-
 def _command_follower(interface: object, target: OperatorTarget, effort: int) -> None:
     interface.JointCtrl(*target.joint_mdeg)
     interface.GripperCtrl(target.gripper_um, effort, 0x01, 0)
@@ -371,6 +355,17 @@ class StandaloneTeleopCoordinator:
             f"timed out waiting for feedback from {endpoint.identity.name}"
         )
 
+    def _wait_operator_target(self, endpoint: _Endpoint) -> OperatorTarget:
+        for _attempt in range(300):
+            try:
+                return operator_target(endpoint.sdk)
+            except TeleopSafetyError:
+                self.sleeper(0.01)
+        raise TeleopSafetyError(
+            f"timed out waiting for teaching frames from {endpoint.identity.name}; "
+            "set it to leader mode (0xFA) and power-cycle that leader arm"
+        )
+
     def _wait_enabled(self, endpoint: _Endpoint) -> None:
         for attempt in range(300):
             if attempt % 20 == 0:
@@ -397,39 +392,29 @@ class StandaloneTeleopCoordinator:
             if len(set(interfaces)) != 4:
                 raise TeleopSafetyError("four arm serials resolved to duplicate CAN interfaces")
             self._wait_firmware()
-            for _config, leader, follower in pairs:
-                leader.sdk.MasterSlaveConfig(0xFC, 0, 0, 0)
+            for _config, _leader, follower in pairs:
                 follower.sdk.MasterSlaveConfig(0xFC, 0, 0, 0)
-            now_ns = self.clock_ns()
+            for _config, leader, _follower in pairs:
+                leader.sdk.MasterSlaveConfig(0xFA, 0, 0, 0)
             for config, leader, follower in pairs:
-                leader_q, leader_mdeg, leader_gripper = self._wait_pose(leader)
+                target = self._wait_operator_target(leader)
                 follower_q, _follower_mdeg, follower_gripper = self._wait_pose(follower)
                 require_aligned(
-                    leader_q,
+                    target.q_rad,
                     follower_q,
-                    leader_gripper,
+                    target.gripper_mm,
                     follower_gripper,
                 )
-                target = _target_from_feedback(
-                    leader_q, leader_mdeg, leader_gripper, now_ns * 1e-9
-                )
-                leader.sdk.MasterSlaveConfig(0xFA, 0, 0, 0)
                 follower.sdk.ModeCtrl(1, 1, self.speed_ratio, 0xAD)
                 self._wait_enabled(follower)
                 _command_follower(follower.sdk, target, self.gripper_effort)
-                try:
-                    baseline_timestamp = operator_target(
-                        leader.sdk,
-                        fallback_gripper_um=target.gripper_um,
-                    ).timestamp_s
-                except TeleopSafetyError:
-                    baseline_timestamp = 0.0
+                now_ns = self.clock_ns()
                 self._sessions[config.name] = _PairSession(
                     config=config,
                     leader=leader,
                     follower=follower,
                     target=target,
-                    last_sdk_timestamp_s=baseline_timestamp,
+                    last_sdk_timestamp_s=target.timestamp_s,
                     last_command_ns=now_ns,
                 )
             self._connected = True
