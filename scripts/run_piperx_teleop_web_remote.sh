@@ -24,10 +24,7 @@ if [[ "$phase" != "idle" ]]; then
     exit 2
 fi
 
-sudo -v
-sudo -n systemctl stop evostudio-client
 child_pid=""
-sudo_keepalive_pid=""
 cleanup() {
     exit_code=$?
     trap - EXIT HUP INT TERM
@@ -35,21 +32,33 @@ cleanup() {
         kill -TERM "$child_pid"
         wait "$child_pid" 2>/dev/null || true
     fi
-    if [[ -n "$sudo_keepalive_pid" ]] && kill -0 "$sudo_keepalive_pid" 2>/dev/null; then
-        kill "$sudo_keepalive_pid"
-        wait "$sudo_keepalive_pid" 2>/dev/null || true
-    fi
-    sudo -n systemctl start evostudio-client
     exit "$exit_code"
 }
 trap cleanup EXIT HUP INT TERM
 
-(
-    while sleep 60; do
-        sudo -n -v || exit 1
-    done
-) &
-sudo_keepalive_pid=$!
+session_pid="$$"
+guard_unit="piperx-teleop-guard-${session_pid}"
+sudo -v
+sudo -n systemd-run --quiet --collect \
+    --unit="$guard_unit" --property=Type=simple \
+    /bin/bash -c '
+        trap "systemctl start evostudio-client" EXIT
+        systemctl stop evostudio-client
+        while kill -0 "$1" 2>/dev/null; do sleep 1; done
+    ' bash "$session_pid"
+
+evostudio_stopped=false
+for _attempt in {1..100}; do
+    if ! systemctl is-active --quiet evostudio-client; then
+        evostudio_stopped=true
+        break
+    fi
+    sleep 0.1
+done
+if [[ "$evostudio_stopped" != true ]]; then
+    echo "guard did not stop EvoStudio within 10 seconds" >&2
+    exit 2
+fi
 
 if pgrep -f '[p]iperx_torque_web.py|[p]iperx_teleop_web.py' >/dev/null; then
     echo "another PiperX monitor or teleop process is already running" >&2

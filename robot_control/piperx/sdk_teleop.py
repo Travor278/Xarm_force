@@ -61,7 +61,11 @@ def _finite(values: Sequence[float], label: str) -> tuple[float, ...]:
     return converted
 
 
-def operator_target(interface: object) -> OperatorTarget:
+def operator_target(
+    interface: object,
+    *,
+    fallback_gripper_um: int | None = None,
+) -> OperatorTarget:
     """Copy the latest teaching-arm target out of one SDK interface."""
     joint_message = interface.GetArmJointCtrl()
     gripper_message = interface.GetArmGripperCtrl()
@@ -71,13 +75,19 @@ def operator_target(interface: object) -> OperatorTarget:
         tuple(math.radians(value / 1000.0) for value in joint_mdeg),
         "operator target",
     )
-    gripper_um = int(gripper_message.gripper_ctrl.grippers_angle)
-    timestamp_s = min(
-        float(joint_message.time_stamp), float(gripper_message.time_stamp)
-    )
-    frequency_hz = min(float(joint_message.Hz), float(gripper_message.Hz) * 2.0)
+    timestamp_s = float(joint_message.time_stamp)
+    frequency_hz = float(joint_message.Hz)
     if timestamp_s <= 0 or frequency_hz <= 0:
         raise TeleopSafetyError("operator target feedback is not live")
+    gripper_is_live = (
+        float(gripper_message.time_stamp) > 0 and float(gripper_message.Hz) > 0
+    )
+    if gripper_is_live:
+        gripper_um = int(gripper_message.gripper_ctrl.grippers_angle)
+    elif fallback_gripper_um is not None:
+        gripper_um = int(fallback_gripper_um)
+    else:
+        raise TeleopSafetyError("operator gripper feedback is not live")
     return OperatorTarget(
         timestamp_s=timestamp_s,
         frequency_hz=frequency_hz,
@@ -408,7 +418,10 @@ class StandaloneTeleopCoordinator:
                 self._wait_enabled(follower)
                 _command_follower(follower.sdk, target, self.gripper_effort)
                 try:
-                    baseline_timestamp = operator_target(leader.sdk).timestamp_s
+                    baseline_timestamp = operator_target(
+                        leader.sdk,
+                        fallback_gripper_um=target.gripper_um,
+                    ).timestamp_s
                 except TeleopSafetyError:
                     baseline_timestamp = 0.0
                 self._sessions[config.name] = _PairSession(
@@ -432,7 +445,10 @@ class StandaloneTeleopCoordinator:
         for name, session in self._sessions.items():
             new_target: OperatorTarget | None = None
             try:
-                candidate = operator_target(session.leader.sdk)
+                candidate = operator_target(
+                    session.leader.sdk,
+                    fallback_gripper_um=session.target.gripper_um,
+                )
                 if candidate.timestamp_s > session.last_sdk_timestamp_s:
                     new_target = candidate
             except TeleopSafetyError:

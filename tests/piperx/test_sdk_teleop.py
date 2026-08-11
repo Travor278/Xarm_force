@@ -102,6 +102,19 @@ def test_operator_target_converts_official_control_units():
     assert target.gripper_mm == pytest.approx(30.0)
 
 
+def test_operator_target_uses_joint_liveness_and_holds_stale_gripper():
+    sdk = FakeSdk()
+    sdk.gripper_ctrl.time_stamp = 1.0
+    sdk.gripper_ctrl.Hz = 0.0
+
+    target = operator_target(sdk, fallback_gripper_um=12_345)
+
+    assert target.timestamp_s == 12.5
+    assert target.frequency_hz == 198.0
+    assert target.gripper_um == 12_345
+    assert target.gripper_mm == pytest.approx(12.345)
+
+
 def test_follower_state_uses_same_sdk_feedback_for_dashboard():
     identity = ArmIdentity("left", "follower-serial", "follower", "can2")
     target = operator_target(FakeSdk())
@@ -309,6 +322,31 @@ def test_coordinator_watchdog_holds_then_fails_without_disabling(tmp_path: Path)
     with pytest.raises(TeleopSafetyError, match="leader command timeout"):
         coordinator.step()
     assert not any(call[0] == "DisableArm" for call in sdks["can2"].calls)
+    coordinator.close()
+
+
+def test_coordinator_joint_frames_keep_watchdog_alive_when_gripper_is_quiet(
+    tmp_path: Path,
+):
+    sdks = _sdk_fixture()
+    now = [1_000_000_000]
+    coordinator = StandaloneTeleopCoordinator(
+        _pair_configs(tmp_path),
+        sdk_factory=lambda interface, **_kwargs: sdks[interface],
+        clock_ns=lambda: now[0],
+        sleeper=lambda _duration: None,
+    )
+    coordinator.connect()
+
+    now[0] += 1_100_000_000
+    sdks["can0"].joint_ctrl.time_stamp += 0.005
+    sdks["can1"].joint_ctrl.time_stamp += 0.005
+    sdks["can0"].gripper_ctrl.Hz = 0.0
+    sdks["can1"].gripper_ctrl.Hz = 0.0
+
+    states = coordinator.step()
+
+    assert set(states) == {"left", "right"}
     coordinator.close()
 
 

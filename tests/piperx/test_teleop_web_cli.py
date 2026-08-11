@@ -72,8 +72,9 @@ def test_remote_wrapper_has_exclusive_controller_and_cleanup_guards():
     assert "systemctl stop evostudio-client" in remote
     assert "trap cleanup" in remote
     assert "systemctl start evostudio-client" in remote
-    assert "sudo -n -v" in remote
-    assert "sudo_keepalive_pid" in remote
+    assert "systemd-run" in remote
+    assert "piperx-teleop-guard" in remote
+    assert "kill -0" in remote
     assert "/home/dell/anaconda3/envs/evo-rl/bin/python" in remote
     assert "conda run" not in combined
     assert "run_piperx_teleop_web_remote.sh" in launcher
