@@ -139,6 +139,21 @@ def _motor_payload(speed_raw: int, current_raw: int) -> bytes:
     return struct.pack(">hhi", speed_raw, current_raw, 0)
 
 
+def _feed_complete_cycle(assembler, start_ns: int):
+    frames = [
+        (0x2A5, _position_payload(1000, 2000)),
+        (0x2A6, _position_payload(3000, 4000)),
+        (0x2A7, _position_payload(5000, 6000)),
+        *((0x251 + index, _motor_payload(100 + index, -1000 + index)) for index in range(6)),
+    ]
+    state = None
+    for offset, (can_id, payload) in enumerate(frames):
+        emitted = assembler.update(can_id, payload, start_ns + offset)
+        if emitted is not None:
+            state = emitted
+    return state
+
+
 def test_assembler_emits_only_after_every_feedback_component_advances():
     assembler = PiperStateAssembler("can2", "serial-left", max_skew_ns=20)
     frames = [
@@ -163,6 +178,64 @@ def test_assembler_emits_only_after_every_feedback_component_advances():
     assert state.q_rad[0] == pytest.approx(0.017453292519943295)
     assert state.qd_rad_s == pytest.approx([0.1, 0.101, 0.102, 0.103, 0.104, 0.105])
     assert assembler.update(0x251, _motor_payload(200, 20), 1010) is None
+
+
+def test_auxiliary_feedback_enriches_state_without_blocking_emission():
+    assembler = PiperStateAssembler(
+        "can2", "serial-left", max_skew_ns=20, auxiliary_stale_after_ns=50
+    )
+    assembler.update(0x264, bytes.fromhex("01f4002d2c40007b"), 1)
+    assembler.update(0x155, _position_payload(1000, 2000), 2)
+    assembler.update(0x156, _position_payload(3000, 4000), 3)
+    assembler.update(0x157, _position_payload(5000, 6000), 4)
+    assembler.update(0x4AF, b"S-V1.8-2", 5)
+
+    state = _feed_complete_cycle(assembler, 10)
+
+    assert state is not None
+    assert state.current_a == pytest.approx([-1.0, -0.999, -0.998, -0.997, -0.996, -0.995])
+    assert state.driver[3] is not None
+    assert state.driver[3].voltage_v == pytest.approx(50.0)
+    assert state.driver[3].foc_temp_c == 45
+    assert state.driver[3].motor_temp_c == 44
+    assert state.driver[3].status_code == 0x40
+    assert state.driver[3].bus_current_a == pytest.approx(0.123)
+    assert state.driver_fresh[3]
+    assert state.q_command_rad == pytest.approx(
+        [0.0174532925, 0.0349065850, 0.0523598776,
+         0.0698131701, 0.0872664626, 0.1047197551]
+    )
+    assert state.command_fresh
+    assert state.firmware == "S-V1.8-2"
+
+
+def test_slow_auxiliary_feedback_becomes_stale_without_blocking_next_state():
+    assembler = PiperStateAssembler(
+        "can2", "serial-left", max_skew_ns=20, auxiliary_stale_after_ns=50
+    )
+    assembler.update(0x261, bytes.fromhex("01f4002520400000"), 1)
+    for can_id in (0x155, 0x156, 0x157):
+        assembler.update(can_id, bytes(8), 1)
+    assert _feed_complete_cycle(assembler, 10) is not None
+
+    state = _feed_complete_cycle(assembler, 100)
+
+    assert state is not None
+    assert not state.driver_fresh[0]
+    assert not state.command_fresh
+
+
+def test_missing_auxiliary_feedback_is_explicitly_unavailable():
+    state = _feed_complete_cycle(
+        PiperStateAssembler("can2", "serial-left", max_skew_ns=20), 10
+    )
+
+    assert state is not None
+    assert state.driver == (None,) * 6
+    assert state.driver_fresh == (False,) * 6
+    assert state.q_command_rad is None
+    assert not state.command_fresh
+    assert state.firmware is None
 
 
 def test_assembler_waits_for_a_coherent_set_after_excessive_skew():
