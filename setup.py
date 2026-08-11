@@ -9,5 +9,7 @@ setup(
         "pybullet>=3.2.5",
         "rich>=13.0.0",
         "pin>=3.9.0",
+        "fastapi>=0.110",
+        "uvicorn>=0.29",
     ],
 )

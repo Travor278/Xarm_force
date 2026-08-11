@@ -18,6 +18,7 @@ def test_estimator_sources_contain_no_can_transmit_or_motion_control_path():
     repository = Path(__file__).resolve().parents[2]
     sources = list((repository / "robot_control" / "piperx").glob("*.py"))
     sources.append(repository / "scripts" / "piperx_external_torque.py")
+    sources.append(repository / "scripts" / "piperx_torque_web.py")
 
     violations = []
     for source in sources:
