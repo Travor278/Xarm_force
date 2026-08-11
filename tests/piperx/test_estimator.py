@@ -44,8 +44,8 @@ class _Calibration:
         self.reason = reason
         self.validated = None
 
-    def validate_runtime(self, serial, urdf_hash, base_rpy):
-        self.validated = (serial, urdf_hash, tuple(base_rpy))
+    def validate_runtime(self, serial, urdf_hash, base_rpy, payload_sha256=None):
+        self.validated = (serial, urdf_hash, tuple(base_rpy), payload_sha256)
 
     def predict(self, _q, _qd):
         return CalibrationPrediction(self.bias.copy(), self.valid, self.reason)
@@ -88,6 +88,7 @@ def test_estimator_uses_documented_external_torque_sign():
         "serial-left",
         "a" * 64,
         (0.0, 0.0, 0.0),
+        None,
     )
 
 

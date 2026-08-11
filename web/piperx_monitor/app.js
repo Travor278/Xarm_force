@@ -3,6 +3,8 @@ import {
   driverAlarms,
   estimateDisplayState,
   externalTracePresentation,
+  gripperAlarms,
+  gripperPresentation,
   medianFinite,
   pearsonCorrelation,
   sampleAgeState,
@@ -13,6 +15,7 @@ const COLORS = {
   external: '#55d8d0', effort: '#ff6b4a', model: '#f0bb52',
   position: '#5e91d8', velocity: '#c6dc72', current: '#ff6b4a', tracking: '#b77bd7',
   grid: '#2d3539', text: '#748084', zero: '#465156',
+  gripperTorque: '#55d8d0', gripperForce: '#c6dc72',
 };
 const arms = ['left', 'right'];
 const buffers = new Map(arms.map((arm) => [arm, new RingBuffer()]));
@@ -30,6 +33,7 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 const canvases = {
   torque: $('#torqueCanvas'), position: $('#positionCanvas'), velocity: $('#velocityCanvas'),
   current: $('#currentCanvas'), tracking: $('#trackingCanvas'),
+  gripperTorque: $('#gripperTorqueCanvas'), gripperForce: $('#gripperForceCanvas'),
 };
 
 function finite(value) { return Number.isFinite(value) ? value : null; }
@@ -40,7 +44,7 @@ function sampleValue(sample, field, joint, scale = 1) {
 }
 
 function acceptSample(sample) {
-  if (sample?.schema !== 'piperx-monitor-v1' || !buffers.has(sample.arm)) return;
+  if (sample?.schema !== 'piperx-monitor-v2' || !buffers.has(sample.arm)) return;
   setRuntimeMode(sample.runtime_mode ?? runtimeMode);
   receivedAt.set(sample.arm, performance.now());
   if (paused) return;
@@ -178,6 +182,15 @@ function tracePoints(samples, field, scale = 1, requireEstimate = false) {
   }));
 }
 
+function gripperTracePoints(samples, field, requireValid = false) {
+  return samples.map((sample) => ({
+    x: sample.timestampMs,
+    y: Number.isFinite(sample?.gripper?.[field]) ? sample.gripper[field] : null,
+    valid: sample?.gripper?.fresh === true
+      && (!requireValid || sample?.gripper?.force_valid === true),
+  }));
+}
+
 function drawAllCharts() {
   const samples = visibleSamples();
   const externalPresentation = externalTracePresentation(samples);
@@ -198,6 +211,14 @@ function drawAllCharts() {
   drawChart(canvases.velocity, [{ points: tracePoints(samples, 'qd_rad_s'), color: COLORS.velocity, visible: true }], { symmetric: true, decimals: 1 });
   drawChart(canvases.current, [{ points: tracePoints(samples, 'current_a'), color: COLORS.current, visible: true }], { symmetric: true, decimals: 1 });
   drawChart(canvases.tracking, [{ points: tracePoints(samples, 'tracking_error_rad', 180 / Math.PI), color: COLORS.tracking, visible: true }], { symmetric: true, decimals: 2 });
+  drawChart(canvases.gripperTorque, [{
+    points: gripperTracePoints(samples, 'feedback_torque_nm'),
+    color: COLORS.gripperTorque, visible: true, width: 1.8, glow: 2,
+  }], { symmetric: true, decimals: 2 });
+  drawChart(canvases.gripperForce, [{
+    points: gripperTracePoints(samples, 'force_n', true),
+    color: COLORS.gripperForce, visible: true, width: 1.8, glow: 2,
+  }], { decimals: 1 });
 }
 
 function updateStatus() {
@@ -240,6 +261,19 @@ function updateStatus() {
   $('#effortNow').textContent = fixed(sampleValue(sample, 'tau_effort_nm', activeJoint));
   $('#modelNow').textContent = fixed(sampleValue(sample, 'tau_model_nm', activeJoint));
   $('#currentNow').textContent = fixed(sampleValue(sample, 'current_a', activeJoint));
+
+  const gripper = gripperPresentation(sample?.gripper);
+  $('#gripperState').dataset.state = gripper.state;
+  $('#gripperState').textContent = {
+    valid: 'FORCE VALID / 已标定',
+    uncalibrated: 'RAW TORQUE / 力未标定',
+    invalid: 'FORCE INVALID / 标定越界或故障',
+    unavailable: 'GRIPPER UNAVAILABLE / 无遥测',
+  }[gripper.state];
+  $('#gripperTravelNow').textContent = fixed(gripper.travelMm, 2);
+  $('#gripperTorqueNow').textContent = fixed(gripper.torqueNm, 3);
+  $('#gripperForceNow').textContent = fixed(gripper.forceN, 1);
+  $('#gripperForceReason').textContent = gripper.reason ?? (gripper.state === 'valid' ? 'VALIDATED CALIBRATION' : '--');
 }
 
 function updateCorrelation() {
@@ -294,7 +328,9 @@ function updateMatrix() {
 
 function updateAlarms() {
   const sample = latest.get(activeArm);
-  const alarms = sample ? driverAlarms(sample.driver) : ['等待遥测数据'];
+  const alarms = sample
+    ? [...driverAlarms(sample.driver), ...gripperAlarms(sample.gripper)]
+    : ['等待遥测数据'];
   const displayState = estimateDisplayState(sample);
   if (sample && displayState === 'extrapolated') {
     alarms.unshift('外推趋势：超出标定工作区，绝对值未验收');

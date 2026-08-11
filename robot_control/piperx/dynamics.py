@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import json
 from pathlib import Path
 from typing import Iterable
 
 import numpy as np
+
+from .payload import RigidPayload
 
 
 class DynamicsError(RuntimeError):
@@ -47,6 +50,7 @@ class PinocchioDynamics:
         urdf_path: str | Path,
         *,
         base_rpy: Iterable[float] = (0.0, 0.0, 0.0),
+        payload: RigidPayload | None = None,
     ) -> None:
         path = Path(urdf_path).expanduser().resolve(strict=True)
         try:
@@ -60,6 +64,19 @@ class PinocchioDynamics:
             raise DynamicsError(
                 f"PiperX model must contain six actuated joints, got nq={model.nq}, nv={model.nv}"
             )
+        if payload is not None:
+            payload.validate()
+            joint_id = int(model.getJointId(payload.parent_joint))
+            if joint_id <= 0 or joint_id >= model.njoints:
+                raise DynamicsError(
+                    f"payload parent joint {payload.parent_joint!r} is not in the URDF"
+                )
+            inertia = pin.Inertia(
+                payload.mass_kg,
+                payload.com_m.copy(),
+                payload.inertia_kg_m2.copy(),
+            )
+            model.appendBodyToJoint(joint_id, inertia, pin.SE3.Identity())
         rpy = tuple(float(value) for value in base_rpy)
         if len(rpy) != 3 or not np.all(np.isfinite(rpy)):
             raise DynamicsError("base_rpy must contain three finite values")
@@ -69,6 +86,16 @@ class PinocchioDynamics:
         self.data = model.createData()
         self.urdf_path = path
         self.urdf_sha256 = sha256_file(path)
+        self.payload_sha256 = payload.sha256 if payload is not None else None
+        identity = json.dumps(
+            {
+                "urdf_sha256": self.urdf_sha256,
+                "payload_sha256": self.payload_sha256,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+        self.dynamics_sha256 = hashlib.sha256(identity).hexdigest()
         self.base_rpy = rpy
 
     def compute(

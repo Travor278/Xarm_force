@@ -135,3 +135,41 @@ export function driverAlarms(drivers) {
   }
   return alarms;
 }
+
+
+export function gripperPresentation(gripper) {
+  const torqueNm = Number.isFinite(gripper?.feedback_torque_nm)
+    ? gripper.feedback_torque_nm : null;
+  const travelMm = Number.isFinite(gripper?.travel_mm) ? gripper.travel_mm : null;
+  const forceN = gripper?.force_valid === true && Number.isFinite(gripper?.force_n)
+    ? gripper.force_n : null;
+  let state = 'unavailable';
+  if (gripper?.available === true && gripper?.fresh === true) {
+    if (gripper.force_valid === true && forceN !== null) state = 'valid';
+    else if (gripper.force_calibrated === false) state = 'uncalibrated';
+    else state = 'invalid';
+  }
+  return {
+    state, torqueNm, travelMm, forceN,
+    reason: gripper?.force_reason ?? null,
+  };
+}
+
+
+export function gripperAlarms(gripper) {
+  if (!gripper?.available) return ['夹爪遥测不可用'];
+  const alarms = [];
+  if (!gripper.fresh) alarms.push('夹爪遥测过期');
+  if (gripper.low_voltage) alarms.push('夹爪欠压');
+  if (gripper.motor_overheat) alarms.push('夹爪电机过温');
+  if (gripper.driver_overcurrent) alarms.push('夹爪驱动过流');
+  if (gripper.driver_overheat) alarms.push('夹爪驱动过温');
+  if (gripper.sensor_abnormal) alarms.push('夹爪传感器异常');
+  if (gripper.driver_error) alarms.push('夹爪驱动错误');
+  if (!gripper.enabled) alarms.push('夹爪未使能');
+  if (!gripper.force_calibrated) alarms.push('夹爪力未标定');
+  else if (!gripper.force_valid && gripper.force_reason) {
+    alarms.push(`夹爪力不可用：${gripper.force_reason}`);
+  }
+  return alarms;
+}

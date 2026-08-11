@@ -15,7 +15,9 @@ from robot_control.piperx.calibration import CalibrationArtifact
 from robot_control.piperx.dynamics import PinocchioDynamics
 from robot_control.piperx.estimator import ExternalTorqueEstimator
 from robot_control.piperx.filtering import VelocityDerivativeFilter
+from robot_control.piperx.gripper_force import GripperForceCalibration
 from robot_control.piperx.monitoring import LatestEventHub
+from robot_control.piperx.payload import RigidPayload
 from robot_control.piperx.sdk_teleop import (
     ArmIdentity,
     StandaloneTeleopRuntime,
@@ -30,6 +32,9 @@ class PiperTeleopWebCliError(RuntimeError):
     pass
 
 
+DEFAULT_PAYLOAD = Path(__file__).resolve().parents[1] / "config" / "piperx_gripper_payload.json"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Standalone bimanual PiperX teleop with shared torque dashboard"
@@ -42,6 +47,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="configure exactly the left and right PiperX pairs",
     )
     parser.add_argument("--urdf", type=Path, required=True)
+    parser.add_argument("--payload", type=Path, default=DEFAULT_PAYLOAD)
+    parser.add_argument(
+        "--gripper-force",
+        action="append",
+        default=[],
+        metavar="NAME=CALIBRATION",
+    )
     parser.add_argument("--base-rpy", nargs=3, type=float, default=(0.0, 0.0, 0.0))
     parser.add_argument("--speed-ratio", type=int, default=10)
     parser.add_argument("--gripper-effort", type=int, default=1000)
@@ -90,12 +102,30 @@ def validate_bind_host(host: str) -> str:
     return host
 
 
+def _parse_gripper_force(values: list[str], names: set[str]) -> dict[str, Path]:
+    paths: dict[str, Path] = {}
+    for value in values:
+        name, separator, path = value.partition("=")
+        if not separator or name not in names or not path or name in paths:
+            raise PiperTeleopWebCliError(
+                "--gripper-force must be unique NAME=CALIBRATION for a configured pair"
+            )
+        paths[name] = Path(path)
+    return paths
+
+
 def build_runtime(args: argparse.Namespace) -> StandaloneTeleopRuntime:
     pairs = parse_pair_specs(args.pair)
+    payload = RigidPayload.load(args.payload)
+    force_paths = _parse_gripper_force(
+        args.gripper_force, {pair.name for pair in pairs}
+    )
     estimators = {}
     for pair in pairs:
         calibration = CalibrationArtifact.load(pair.calibration_path)
-        dynamics = PinocchioDynamics(args.urdf, base_rpy=args.base_rpy)
+        dynamics = PinocchioDynamics(
+            args.urdf, base_rpy=args.base_rpy, payload=payload
+        )
         estimators[pair.name] = ExternalTorqueEstimator(
             dynamics,
             VelocityDerivativeFilter(),
@@ -109,6 +139,10 @@ def build_runtime(args: argparse.Namespace) -> StandaloneTeleopRuntime:
         gripper_effort=args.gripper_effort,
         control_rate_hz=args.control_rate,
         ui_rate_hz=args.ui_rate,
+        gripper_calibrations={
+            name: GripperForceCalibration.load(path)
+            for name, path in force_paths.items()
+        },
     )
 
 

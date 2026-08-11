@@ -27,6 +27,7 @@ from robot_control.piperx.calibration import (
 from robot_control.piperx.dynamics import DynamicsError, PinocchioDynamics
 from robot_control.piperx.estimator import Estimate, ExternalTorqueEstimator, bounded_for_display
 from robot_control.piperx.filtering import VelocityDerivativeFilter
+from robot_control.piperx.payload import PayloadError, RigidPayload
 from robot_control.piperx.records import (
     RecordError,
     TorqueLog,
@@ -45,6 +46,7 @@ from robot_control.piperx.socketcan import (
 
 STATIONARY_LIMIT_NM = np.array([0.15, 0.30, 0.30, 0.15, 0.15, 0.15])
 FREE_MOTION_P95_LIMIT_NM = 0.50
+DEFAULT_PAYLOAD = Path(__file__).resolve().parents[1] / "config" / "piperx_gripper_payload.json"
 
 
 class PiperTorqueCliError(RuntimeError):
@@ -75,6 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("--arm", required=True)
     record.add_argument("--serial", required=True)
     record.add_argument("--urdf", type=Path, required=True)
+    record.add_argument("--payload", type=Path, default=DEFAULT_PAYLOAD)
     record.add_argument("--seconds", type=float, required=True)
     record.add_argument("--output", type=Path, required=True)
     record.add_argument("--group-seconds", type=float, default=2.0)
@@ -100,6 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAME,SERIAL,CALIBRATION",
     )
     monitor.add_argument("--urdf", type=Path, required=True)
+    monitor.add_argument("--payload", type=Path, default=DEFAULT_PAYLOAD)
     monitor.add_argument("--seconds", type=float, default=0.0)
     _add_base_rpy(monitor)
 
@@ -158,7 +162,9 @@ def score_known_load(samples_nm: np.ndarray, expected_nm: np.ndarray) -> dict[st
     }
 
 
-def _metadata_identity(log: TorqueLog) -> tuple[str, str, tuple[float, float, float]]:
+def _metadata_identity(
+    log: TorqueLog,
+) -> tuple[str, str, tuple[float, float, float], str | None]:
     try:
         serial = str(log.metadata["adapter_serial"])
         urdf_hash = str(log.metadata["urdf_sha256"])
@@ -167,7 +173,10 @@ def _metadata_identity(log: TorqueLog) -> tuple[str, str, tuple[float, float, fl
         raise PiperTorqueCliError("log metadata lacks arm/URDF/base identity") from error
     if len(base_rpy) != 3:
         raise PiperTorqueCliError("log base_rpy metadata must contain three values")
-    return serial, urdf_hash, base_rpy
+    payload_hash = log.metadata.get("payload_sha256")
+    return serial, urdf_hash, base_rpy, (
+        str(payload_hash) if payload_hash is not None else None
+    )
 
 
 def _require_log_label(log: TorqueLog, expected: str, command: str) -> None:
@@ -181,8 +190,8 @@ def _require_log_label(log: TorqueLog, expected: str, command: str) -> None:
 def _replay_external(
     log: TorqueLog, artifact: CalibrationArtifact
 ) -> tuple[np.ndarray, int, int]:
-    serial, urdf_hash, base_rpy = _metadata_identity(log)
-    artifact.validate_runtime(serial, urdf_hash, base_rpy)
+    serial, urdf_hash, base_rpy, payload_hash = _metadata_identity(log)
+    artifact.validate_runtime(serial, urdf_hash, base_rpy, payload_hash)
     source_mask = finite_valid_mask(log)
     indices = np.flatnonzero(source_mask)
     estimates: list[np.ndarray] = []
@@ -206,7 +215,7 @@ def _run_fit(args: argparse.Namespace) -> int:
     log = load_torque_log(args.input)
     if log.metadata.get("label") != "no_contact":
         raise PiperTorqueCliError("calibration input must be explicitly labelled no_contact")
-    serial, urdf_hash, base_rpy = _metadata_identity(log)
+    serial, urdf_hash, base_rpy, payload_hash = _metadata_identity(log)
     mask = finite_valid_mask(log)
     if np.count_nonzero(mask) < 2:
         raise PiperTorqueCliError("calibration log has fewer than two valid finite samples")
@@ -218,6 +227,7 @@ def _run_fit(args: argparse.Namespace) -> int:
         group_ids=log.arrays["group_id"][mask],
         adapter_serial=serial,
         urdf_sha256=urdf_hash,
+        payload_sha256=payload_hash,
         base_rpy=base_rpy,
         source_log_sha256=file_sha256(args.input),
         ridge=args.ridge,
@@ -329,7 +339,8 @@ def _run_record(args: argparse.Namespace) -> int:
     )
     if args.seconds <= 0:
         raise PiperTorqueCliError("--seconds must be positive")
-    dynamics = PinocchioDynamics(args.urdf, base_rpy=args.base_rpy)
+    payload = RigidPayload.load(args.payload)
+    dynamics = PinocchioDynamics(args.urdf, base_rpy=args.base_rpy, payload=payload)
     interface = discover_interface(args.serial)
     assembler = PiperStateAssembler(interface, args.serial)
     estimator = ExternalTorqueEstimator(
@@ -356,6 +367,8 @@ def _run_record(args: argparse.Namespace) -> int:
             "interface": interface,
             "urdf_path": str(dynamics.urdf_path),
             "urdf_sha256": dynamics.urdf_sha256,
+            "payload_path": str(args.payload.resolve()),
+            "payload_sha256": dynamics.payload_sha256,
             "base_rpy": list(dynamics.base_rpy),
             "label": label,
             "receive_only": True,
@@ -396,15 +409,22 @@ def _monitor_worker(
     serial: str,
     artifact_path: Path,
     urdf: Path,
+    payload_path: Path,
     base_rpy: Iterable[float],
     stop: threading.Event,
     output: queue.Queue[tuple[str, Estimate | Exception]],
 ) -> None:
     try:
         interface = discover_interface(serial)
-        dynamics = PinocchioDynamics(urdf, base_rpy=base_rpy)
+        payload = RigidPayload.load(payload_path)
+        dynamics = PinocchioDynamics(urdf, base_rpy=base_rpy, payload=payload)
         artifact = CalibrationArtifact.load(artifact_path)
-        artifact.validate_runtime(serial, dynamics.urdf_sha256, dynamics.base_rpy)
+        artifact.validate_runtime(
+            serial,
+            dynamics.urdf_sha256,
+            dynamics.base_rpy,
+            dynamics.payload_sha256,
+        )
         estimator = ExternalTorqueEstimator(dynamics, VelocityDerivativeFilter(), artifact)
         assembler = PiperStateAssembler(interface, serial)
         with ReadOnlySocketCan(interface, timeout_s=0.1) as reader:
@@ -432,7 +452,7 @@ def _run_monitor(args: argparse.Namespace) -> int:
     threads = [
         threading.Thread(
             target=_monitor_worker,
-            args=(*spec, args.urdf, args.base_rpy, stop, output),
+            args=(*spec, args.urdf, args.payload, args.base_rpy, stop, output),
             daemon=True,
             name=f"piperx-monitor-{spec[0]}",
         )
@@ -488,6 +508,7 @@ def main(argv: list[str] | None = None) -> int:
         CalibrationMismatchError,
         CanDiscoveryError,
         DynamicsError,
+        PayloadError,
         RecordError,
         OSError,
         ValueError,

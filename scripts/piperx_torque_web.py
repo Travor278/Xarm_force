@@ -15,7 +15,9 @@ from robot_control.piperx.calibration import CalibrationArtifact
 from robot_control.piperx.dynamics import PinocchioDynamics
 from robot_control.piperx.estimator import ExternalTorqueEstimator
 from robot_control.piperx.filtering import VelocityDerivativeFilter
+from robot_control.piperx.gripper_force import GripperForceCalibration
 from robot_control.piperx.monitoring import LatestEventHub
+from robot_control.piperx.payload import RigidPayload
 from robot_control.piperx.web_monitor import (
     ArmAcquisitionWorker,
     ArmMonitorConfig,
@@ -26,6 +28,9 @@ from robot_control.piperx.web_monitor import (
 
 class PiperWebCliError(RuntimeError):
     pass
+
+
+DEFAULT_PAYLOAD = Path(__file__).resolve().parents[1] / "config" / "piperx_gripper_payload.json"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -40,6 +45,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="repeat once per follower arm",
     )
     parser.add_argument("--urdf", type=Path, required=True)
+    parser.add_argument("--payload", type=Path, default=DEFAULT_PAYLOAD)
+    parser.add_argument(
+        "--gripper-force",
+        action="append",
+        default=[],
+        metavar="NAME=CALIBRATION",
+        help="optional calibrated gripper feedback-torque to fingertip-force artifact",
+    )
     parser.add_argument("--base-rpy", nargs=3, type=float, default=(0.0, 0.0, 0.0))
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
@@ -88,6 +101,18 @@ def _parse_firmware(values: list[str], arm_names: set[str]) -> dict[str, str]:
     return overrides
 
 
+def _parse_gripper_force(values: list[str], arm_names: set[str]) -> dict[str, Path]:
+    paths: dict[str, Path] = {}
+    for value in values:
+        name, separator, path = value.partition("=")
+        if not separator or name not in arm_names or not path or name in paths:
+            raise PiperWebCliError(
+                "--gripper-force must be unique NAME=CALIBRATION for a configured arm"
+            )
+        paths[name] = Path(path)
+    return paths
+
+
 def validate_bind_host(host: str, *, allow_network_bind: bool) -> str:
     if host == "localhost":
         return host
@@ -105,12 +130,17 @@ def validate_bind_host(host: str, *, allow_network_bind: bool) -> str:
 
 def build_runtime(args: argparse.Namespace) -> MonitorRuntime:
     configs = parse_arm_specs(args.arm)
-    firmware = _parse_firmware(args.firmware, {config.name for config in configs})
+    arm_names = {config.name for config in configs}
+    firmware = _parse_firmware(args.firmware, arm_names)
+    force_paths = _parse_gripper_force(args.gripper_force, arm_names)
+    payload = RigidPayload.load(args.payload)
     hub = LatestEventHub()
     workers = []
     for config in configs:
         calibration = CalibrationArtifact.load(config.calibration_path)
-        dynamics = PinocchioDynamics(args.urdf, base_rpy=args.base_rpy)
+        dynamics = PinocchioDynamics(
+            args.urdf, base_rpy=args.base_rpy, payload=payload
+        )
         estimator = ExternalTorqueEstimator(
             dynamics,
             VelocityDerivativeFilter(),
@@ -128,6 +158,11 @@ def build_runtime(args: argparse.Namespace) -> MonitorRuntime:
                 estimator=estimator,
                 hub=hub,
                 ui_rate_hz=args.ui_rate,
+                gripper_calibration=(
+                    GripperForceCalibration.load(force_paths[config.name])
+                    if config.name in force_paths
+                    else None
+                ),
             )
         )
     return MonitorRuntime(workers, hub)

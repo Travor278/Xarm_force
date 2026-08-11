@@ -16,6 +16,7 @@ import numpy as np
 
 from .protocol import (
     FirmwareFragment,
+    GripperSample,
     HighSpeedSample,
     JointCommandPair,
     LowSpeedSample,
@@ -151,6 +152,14 @@ class DriverTelemetry:
 
 
 @dataclass(frozen=True)
+class GripperTelemetry:
+    travel_mm: float
+    torque_nm: float
+    status_code: int
+    timestamp_ns: int
+
+
+@dataclass(frozen=True)
 class PiperState:
     interface: str
     adapter_serial: str
@@ -168,6 +177,8 @@ class PiperState:
     q_command_rad: tuple[float, ...] | None = None
     command_fresh: bool = False
     firmware: str | None = None
+    gripper: GripperTelemetry | None = None
+    gripper_fresh: bool = False
 
 
 class PiperStateAssembler:
@@ -197,6 +208,8 @@ class PiperStateAssembler:
         self._command_timestamps = np.zeros(3, dtype=np.int64)
         self._firmware_buffer = bytearray()
         self._firmware: str | None = None
+        self._gripper: GripperTelemetry | None = None
+        self._gripper_timestamp = 0
         self._position_revision = np.zeros(3, dtype=np.int64)
         self._motor_revision = np.zeros(6, dtype=np.int64)
         self._emitted_position_revision = np.zeros(3, dtype=np.int64)
@@ -234,6 +247,15 @@ class PiperStateAssembler:
             self._q_command[first : first + 2] = decoded.positions_rad
             self._command_timestamps[first // 2] = timestamp_ns
             return None
+        elif isinstance(decoded, GripperSample):
+            self._gripper = GripperTelemetry(
+                travel_mm=decoded.travel_mm,
+                torque_nm=decoded.torque_nm,
+                status_code=decoded.status_code,
+                timestamp_ns=timestamp_ns,
+            )
+            self._gripper_timestamp = timestamp_ns
+            return None
         elif isinstance(decoded, FirmwareFragment):
             self._firmware_buffer.extend(decoded.data)
             if len(self._firmware_buffer) > 64:
@@ -270,6 +292,10 @@ class PiperStateAssembler:
             and emit_ns - int(np.min(self._command_timestamps))
             <= self.auxiliary_stale_after_ns
         )
+        gripper_fresh = bool(
+            self._gripper_timestamp > 0
+            and emit_ns - self._gripper_timestamp <= self.auxiliary_stale_after_ns
+        )
         frequency_hz = None
         self._emit_timestamps.append(emit_ns)
         cutoff_ns = emit_ns - 1_000_000_000
@@ -300,6 +326,8 @@ class PiperStateAssembler:
             ),
             command_fresh=command_fresh,
             firmware=self._firmware,
+            gripper=self._gripper,
+            gripper_fresh=gripper_fresh,
         )
         self._emitted_position_revision[:] = self._position_revision
         self._emitted_motor_revision[:] = self._motor_revision

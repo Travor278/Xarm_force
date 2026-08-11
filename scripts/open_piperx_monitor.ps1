@@ -13,10 +13,12 @@ $ErrorActionPreference = "Stop"
 
 $deployment = "/home/dell/piperx-force-validation"
 $urdf = "/home/dell/Evo-RL.before-pr-sync/src/lerobot/assets/piper_x_description/urdf/piper_x_description_no_gripper.urdf"
+$payload = "$deployment/config/piperx_gripper_payload.json"
 $remoteCommand = @(
     "cd $deployment && exec /home/dell/anaconda3/bin/conda run --no-capture-output -n evo-rl",
     "python scripts/piperx_torque_web.py",
     "--urdf $urdf",
+    "--payload $payload",
     "--arm left,004B00204148570D20343133,calibration/left.json",
     "--arm right,003F002D4148571320343133,calibration/right.json",
     "--host 127.0.0.1 --port $RemotePort --ui-rate 50"

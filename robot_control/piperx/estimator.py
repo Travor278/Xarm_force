@@ -114,6 +114,7 @@ class ExternalTorqueEstimator:
                     state.adapter_serial,
                     self.dynamics.urdf_sha256,
                     self.dynamics.base_rpy,
+                    getattr(self.dynamics, "payload_sha256", None),
                 )
             except CalibrationMismatchError as error:
                 return Estimate(

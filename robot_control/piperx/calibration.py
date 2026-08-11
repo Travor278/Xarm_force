@@ -97,6 +97,7 @@ class CalibrationPrediction:
 class CalibrationArtifact:
     adapter_serial: str
     urdf_sha256: str
+    payload_sha256: str | None
     base_rpy: tuple[float, float, float]
     coefficients: np.ndarray
     ridge: float
@@ -116,6 +117,7 @@ class CalibrationArtifact:
         adapter_serial: str,
         urdf_sha256: str,
         base_rpy: Iterable[float],
+        payload_sha256: str | None = None,
     ) -> None:
         if adapter_serial != self.adapter_serial:
             raise CalibrationMismatchError(
@@ -123,6 +125,8 @@ class CalibrationArtifact:
             )
         if urdf_sha256 != self.urdf_sha256:
             raise CalibrationMismatchError("URDF SHA-256 does not match calibration")
+        if payload_sha256 != self.payload_sha256:
+            raise CalibrationMismatchError("payload SHA-256 does not match calibration")
         runtime_rpy = np.asarray(tuple(base_rpy), dtype=np.float64)
         if runtime_rpy.shape != (3,) or not np.allclose(
             runtime_rpy, self.base_rpy, atol=1e-12, rtol=0.0
@@ -160,6 +164,7 @@ class CalibrationArtifact:
             "feature_version": self.feature_version,
             "adapter_serial": self.adapter_serial,
             "urdf_sha256": self.urdf_sha256,
+            "payload_sha256": self.payload_sha256,
             "base_rpy": list(self.base_rpy),
             "coefficients": self.coefficients.tolist(),
             "ridge": self.ridge,
@@ -189,6 +194,11 @@ class CalibrationArtifact:
             feature_version=str(document["feature_version"]),
             adapter_serial=str(document["adapter_serial"]),
             urdf_sha256=str(document["urdf_sha256"]),
+            payload_sha256=(
+                str(document["payload_sha256"])
+                if document.get("payload_sha256") is not None
+                else None
+            ),
             base_rpy=tuple(float(value) for value in document["base_rpy"]),
             coefficients=np.asarray(document["coefficients"], dtype=np.float64),
             ridge=float(document["ridge"]),
@@ -239,6 +249,7 @@ def fit_calibration(
     group_ids: np.ndarray,
     adapter_serial: str,
     urdf_sha256: str,
+    payload_sha256: str | None = None,
     base_rpy: Iterable[float],
     source_log_sha256: str,
     ridge: float = 1e-3,
@@ -281,6 +292,7 @@ def fit_calibration(
     artifact = CalibrationArtifact(
         adapter_serial=adapter_serial,
         urdf_sha256=urdf_sha256,
+        payload_sha256=payload_sha256,
         base_rpy=rpy,
         coefficients=weights.T,
         ridge=float(ridge),

@@ -13,6 +13,7 @@ HIGH_SPEED_IDS = {0x251 + index: index for index in range(6)}
 LOW_SPEED_IDS = {0x261 + index: index for index in range(6)}
 JOINT_COMMAND_IDS = {0x155: 0, 0x156: 2, 0x157: 4}
 FIRMWARE_ID = 0x4AF
+GRIPPER_ID = 0x2A8
 EFFORT_NM_PER_RAW = (
     1.18125e-3,
     1.18125e-3,
@@ -25,6 +26,7 @@ EFFORT_NM_PER_RAW = (
 _POSITION = struct.Struct(">ii")
 _HIGH_SPEED = struct.Struct(">hhi")
 _LOW_SPEED = struct.Struct(">HhbBH")
+_GRIPPER = struct.Struct(">ihBB")
 
 
 class FrameDecodeError(ValueError):
@@ -56,13 +58,25 @@ class JointCommandPair:
 
 
 @dataclass(frozen=True)
+class GripperSample:
+    travel_mm: float
+    torque_nm: float
+    status_code: int
+
+
+@dataclass(frozen=True)
 class FirmwareFragment:
     data: bytes
 
 
 PositionPair: TypeAlias = tuple[int, tuple[float, float]]
 DecodedFrame: TypeAlias = (
-    PositionPair | HighSpeedSample | LowSpeedSample | JointCommandPair | FirmwareFragment
+    PositionPair
+    | HighSpeedSample
+    | LowSpeedSample
+    | JointCommandPair
+    | GripperSample
+    | FirmwareFragment
 )
 
 
@@ -125,6 +139,19 @@ def decode_joint_command(can_id: int, payload: bytes) -> JointCommandPair:
     )
 
 
+def decode_gripper(can_id: int, payload: bytes) -> GripperSample:
+    """Decode official 0x2A8 gripper travel, feedback torque, and status."""
+    if can_id != GRIPPER_ID:
+        raise FrameDecodeError(f"CAN identifier 0x{can_id:x} is not a gripper frame")
+    _require_payload(payload)
+    raw_travel, raw_torque, status_code, _reserved = _GRIPPER.unpack(payload)
+    return GripperSample(
+        travel_mm=raw_travel * 1e-3,
+        torque_nm=raw_torque * 1e-3,
+        status_code=status_code,
+    )
+
+
 def decode_frame(can_id: int, payload: bytes) -> DecodedFrame | None:
     """Decode a frame needed by the estimator and ignore every other ID."""
     if can_id in POSITION_IDS:
@@ -135,6 +162,8 @@ def decode_frame(can_id: int, payload: bytes) -> DecodedFrame | None:
         return decode_low_speed(can_id, payload)
     if can_id in JOINT_COMMAND_IDS:
         return decode_joint_command(can_id, payload)
+    if can_id == GRIPPER_ID:
+        return decode_gripper(can_id, payload)
     if can_id == FIRMWARE_ID:
         _require_payload(payload)
         return FirmwareFragment(bytes(payload))

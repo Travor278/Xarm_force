@@ -21,7 +21,7 @@ tau_external = tau_model + tau_bias - tau_measured
 - 不执行 CAN 接口初始化或 `ip link`，接口必须已经由现有系统配置完成。
 - 不调用 Piper SDK，不发送固件查询、角色切换、使能、运动、夹爪或 MIT 力矩命令。
 - 通过 USB-CAN 序列号发现接口，不依赖可能变化的 `can2`/`can3` 名称。
-- 标定工件与适配器序列号、URDF SHA-256 和基座方向绑定；不匹配时拒绝运行。
+- 标定工件与适配器序列号、URDF SHA-256、夹爪负载 SHA-256 和基座方向绑定；不匹配时拒绝运行。
 - 输入不完整、陈旧、时间倒退、采样间隔过大、加速度异常或越出标定工作区时，样本标为无效。
 - 标定不会在线自更新，以免把持续真实接触吸收到零偏中。
 
@@ -35,7 +35,7 @@ python -m pytest tests/piperx -q
 python scripts/piperx_external_torque.py --help
 ```
 
-PiperX URDF 必须通过 `--urdf` 显式提供。本仓库不复制上游模型；标定 JSON 会保存实际文件哈希。运行时必须使用与标定时完全相同的文件。
+PiperX URDF 必须通过 `--urdf` 显式提供。默认同时加载 `config/piperx_gripper_payload.json`，把官方夹爪 0.500 kg 质量、质心和惯量附加到 J6；标定 JSON 会同时保存 URDF 与负载哈希。运行时必须使用与标定时完全相同的两份模型。
 
 ## 当前 `.166` 从臂身份
 
@@ -171,6 +171,10 @@ ssh -o ExitOnForwardFailure=yes `
 常用界面操作：数字键 `1`–`6` 选择关节，`L`/`R` 选择从臂；PAUSE 只冻结
 本地显示，不会暂停远端采集或遥操。无效估计在图上断线而不是画成零，原因会
 在右侧告警区显示。
+
+网页还解码官方 `0x2A8` 夹爪行程、反馈电机力矩和状态。该帧提供的是力矩而非
+夹爪电流；未加载实测工件时只显示 N·m，不显示伪造的 N。用力计采点、拟合和
+启动参数见 `docs/piperx_gripper_force_calibration.md`。
 
 ### 普通遥操与 Web 联合模式
 

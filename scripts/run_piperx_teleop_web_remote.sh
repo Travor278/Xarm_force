@@ -4,6 +4,7 @@ set -u
 deployment="/home/dell/piperx-force-validation"
 python_bin="/home/dell/anaconda3/envs/evo-rl/bin/python"
 urdf="/home/dell/Evo-RL.before-pr-sync/src/lerobot/assets/piper_x_description/urdf/piper_x_description_no_gripper.urdf"
+payload="$deployment/config/piperx_gripper_payload.json"
 remote_port="${1:-18765}"
 
 case "$remote_port" in
@@ -75,6 +76,7 @@ done
 cd "$deployment"
 "$python_bin" scripts/piperx_teleop_web.py \
     --urdf "$urdf" \
+    --payload "$payload" \
     --pair left,0040002C4148570C20343133,004B00204148570D20343133,calibration/left.json \
     --pair right,003900454148571320343133,003F002D4148571320343133,calibration/right.json \
     --speed-ratio 10 --gripper-effort 1000 \

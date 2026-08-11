@@ -73,6 +73,7 @@ def _synthetic_fit():
         group_ids=groups,
         adapter_serial="serial-left",
         urdf_sha256="a" * 64,
+        payload_sha256="p" * 64,
         base_rpy=(0.0, 0.0, 0.0),
         source_log_sha256="b" * 64,
         ridge=1e-9,
@@ -107,18 +108,30 @@ def test_artifact_json_round_trip_preserves_predictions(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("serial", "urdf_hash", "base_rpy", "message"),
+    ("serial", "urdf_hash", "base_rpy", "payload_hash", "message"),
     [
-        ("other", "a" * 64, (0.0, 0.0, 0.0), "adapter serial"),
-        ("serial-left", "c" * 64, (0.0, 0.0, 0.0), "URDF"),
-        ("serial-left", "a" * 64, (0.1, 0.0, 0.0), "base orientation"),
+        ("other", "a" * 64, (0.0, 0.0, 0.0), "p" * 64, "adapter serial"),
+        ("serial-left", "c" * 64, (0.0, 0.0, 0.0), "p" * 64, "URDF"),
+        ("serial-left", "a" * 64, (0.1, 0.0, 0.0), "p" * 64, "base orientation"),
+        ("serial-left", "a" * 64, (0.0, 0.0, 0.0), "q" * 64, "payload"),
     ],
 )
-def test_artifact_rejects_runtime_identity_mismatch(serial, urdf_hash, base_rpy, message):
+def test_artifact_rejects_runtime_identity_mismatch(
+    serial, urdf_hash, base_rpy, payload_hash, message
+):
     artifact, *_ = _synthetic_fit()
 
     with pytest.raises(CalibrationMismatchError, match=message):
-        artifact.validate_runtime(serial, urdf_hash, base_rpy)
+        artifact.validate_runtime(serial, urdf_hash, base_rpy, payload_hash)
+
+
+def test_payload_calibration_fails_closed_when_runtime_omits_payload():
+    artifact, *_ = _synthetic_fit()
+
+    with pytest.raises(CalibrationMismatchError, match="payload"):
+        artifact.validate_runtime(
+            "serial-left", "a" * 64, (0.0, 0.0, 0.0), None
+        )
 
 
 def test_load_rejects_unknown_feature_version(tmp_path):

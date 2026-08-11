@@ -11,8 +11,9 @@ import time
 from typing import Callable, Literal, Mapping, Protocol, Sequence
 
 from .estimator import Estimate
+from .gripper_force import GripperForceCalibration
 from .monitoring import SCHEMA_VERSION, LatestEventHub, serialize_snapshot
-from .socketcan import DriverTelemetry, PiperState
+from .socketcan import DriverTelemetry, GripperTelemetry, PiperState
 from .socketcan import discover_interface
 
 
@@ -110,6 +111,7 @@ def follower_state(
     joint_message = interface.GetArmJointMsgs()
     high_message = interface.GetArmHighSpdInfoMsgs()
     low_message = interface.GetArmLowSpdInfoMsgs()
+    gripper_message = interface.GetArmGripperMsgs()
     joints = _six_fields(joint_message.joint_state, "joint")
     q_rad = _finite(
         tuple(math.radians(float(value) / 1000.0) for value in joints),
@@ -143,6 +145,22 @@ def follower_state(
     frequency_hz = min(float(joint_message.Hz), float(high_message.Hz))
     if frequency_hz <= 0:
         raise TeleopSafetyError("follower feedback is not live")
+    gripper_state = gripper_message.gripper_state
+    gripper_values = (
+        float(gripper_state.grippers_angle) * 0.001,
+        float(gripper_state.grippers_effort) * 0.001,
+    )
+    if not all(math.isfinite(value) for value in gripper_values):
+        raise TeleopSafetyError("follower gripper feedback is not finite")
+    gripper_fresh = bool(
+        float(gripper_message.time_stamp) > 0 and float(gripper_message.Hz) > 0
+    )
+    gripper = GripperTelemetry(
+        travel_mm=gripper_values[0],
+        torque_nm=gripper_values[1],
+        status_code=int(gripper_state.status_code),
+        timestamp_ns=now_ns,
+    )
     return PiperState(
         interface=identity.interface or "",
         adapter_serial=identity.serial,
@@ -160,6 +178,8 @@ def follower_state(
         q_command_rad=target.q_rad,
         command_fresh=True,
         firmware=firmware,
+        gripper=gripper,
+        gripper_fresh=gripper_fresh,
     )
 
 
@@ -549,6 +569,7 @@ class StandaloneTeleopRuntime:
         ui_rate_hz: float = 25.0,
         speed_ratio: int = 10,
         gripper_effort: int = 1000,
+        gripper_calibrations: Mapping[str, GripperForceCalibration] | None = None,
     ) -> None:
         validate_pair_configs(pair_configs)
         names = {config.name for config in pair_configs}
@@ -562,6 +583,9 @@ class StandaloneTeleopRuntime:
             raise ValueError("event queue must hold one event per teleop pair")
         self.hub = hub
         self.estimators = dict(estimators)
+        self.gripper_calibrations = dict(gripper_calibrations or {})
+        if not set(self.gripper_calibrations).issubset(names):
+            raise ValueError("gripper calibrations must match configured teleop pair names")
         self.clock_ns = clock_ns
         self.control_period_ns = int(1e9 / control_rate_hz)
         self.ui_period_ns = int(1e9 / ui_rate_hz)
@@ -629,7 +653,11 @@ class StandaloneTeleopRuntime:
                         estimate = self.estimators[name].estimate(state)
                         self._sequences[name] += 1
                         event = serialize_snapshot(
-                            name, state, estimate, self._sequences[name]
+                            name,
+                            state,
+                            estimate,
+                            self._sequences[name],
+                            gripper_calibration=self.gripper_calibrations.get(name),
                         )
                         event["runtime_mode"] = "standalone_teleop"
                         with self._lock:

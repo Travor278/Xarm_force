@@ -12,6 +12,7 @@ from robot_control.piperx.dynamics import (
     gravity_in_base,
     sha256_file,
 )
+from robot_control.piperx.payload import RigidPayload
 
 
 def test_sha256_file_hashes_exact_bytes(tmp_path):
@@ -88,4 +89,40 @@ def test_pinocchio_backend_rejects_wrong_state_shape(tmp_path):
 
     with pytest.raises(DynamicsError, match="shape"):
         backend.compute(np.zeros(5), np.zeros(6), np.zeros(6))
+
+
+def test_pinocchio_backend_attaches_payload_without_adding_a_joint(tmp_path):
+    pytest.importorskip("pinocchio")
+    payload = RigidPayload.from_dict(
+        {
+            "schema_version": 1,
+            "name": "test-load",
+            "parent_joint": "joint6",
+            "reference_opening_m": 0.035,
+            "mass_kg": 0.5,
+            "com_m": [0.0, 0.0, 0.04],
+            "inertia_kg_m2": [
+                [0.0012, 0.0, 0.0],
+                [0.0, 0.0010, 0.0],
+                [0.0, 0.0, 0.00045],
+            ],
+            "source": {
+                "repository": "https://example.test/official.git",
+                "commit": "a" * 40,
+                "path": "model.urdf",
+            },
+        }
+    )
+
+    without_payload = PinocchioDynamics(_write_urdf(tmp_path))
+    with_payload = PinocchioDynamics(_write_urdf(tmp_path), payload=payload)
+
+    assert with_payload.model.nq == 6
+    assert with_payload.model.nv == 6
+    assert with_payload.payload_sha256 == payload.sha256
+    assert with_payload.dynamics_sha256 != without_payload.dynamics_sha256
+    assert with_payload.model.inertias[with_payload.model.getJointId("joint6")].mass == pytest.approx(
+        without_payload.model.inertias[without_payload.model.getJointId("joint6")].mass
+        + 0.5
+    )
 

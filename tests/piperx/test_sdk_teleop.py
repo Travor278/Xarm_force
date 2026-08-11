@@ -72,6 +72,15 @@ class FakeSdk:
         )
         self.low.time_stamp = 13.0
         self.low.Hz = 10.0
+        self.gripper_feedback = NS(
+            time_stamp=13.0,
+            Hz=100.0,
+            gripper_state=NS(
+                grippers_angle=30_000,
+                grippers_effort=-250,
+                status_code=0xC0,
+            ),
+        )
 
     def GetArmJointCtrl(self):
         return self.joint_ctrl
@@ -87,6 +96,9 @@ class FakeSdk:
 
     def GetArmLowSpdInfoMsgs(self):
         return self.low
+
+    def GetArmGripperMsgs(self):
+        return self.gripper_feedback
 
 
 def test_operator_target_converts_official_control_units():
@@ -137,6 +149,11 @@ def test_follower_state_uses_same_sdk_feedback_for_dashboard():
     assert state.driver[0].motor_temp_c == 36
     assert state.driver[0].status_code == 0x40
     assert state.driver[0].bus_current_a == pytest.approx(0.123)
+    assert state.gripper is not None
+    assert state.gripper.travel_mm == pytest.approx(30.0)
+    assert state.gripper.torque_nm == pytest.approx(-0.25)
+    assert state.gripper.status_code == 0xC0
+    assert state.gripper_fresh
 
 
 def test_alignment_accepts_exact_limits_and_rejects_excess():
@@ -191,7 +208,11 @@ class FullFakeSdk(FakeSdk):
         self.gripper = NS(
             time_stamp=13.0,
             Hz=100.0,
-            gripper_state=NS(grippers_angle=30_000),
+            gripper_state=NS(
+                grippers_angle=30_000,
+                grippers_effort=-250,
+                status_code=0xC0,
+            ),
         )
         self.auto_advance = False
         self.ack_role_commands = True

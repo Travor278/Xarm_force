@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .estimator import Estimate
+from .gripper_force import GripperForceCalibration
 from .monitoring import SCHEMA_VERSION, LatestEventHub, serialize_snapshot, sse_message
 from .socketcan import (
     PiperState,
@@ -56,6 +57,7 @@ class ArmAcquisitionWorker:
         reader_factory: Callable[..., _Reader] = ReadOnlySocketCan,
         interface_resolver: Callable[[str], str] = discover_interface,
         ui_rate_hz: float = 50.0,
+        gripper_calibration: GripperForceCalibration | None = None,
     ) -> None:
         if not config.name or not config.serial:
             raise ValueError("arm name and adapter serial must not be empty")
@@ -76,6 +78,7 @@ class ArmAcquisitionWorker:
         self._error: str | None = None
         self._interface: str | None = config.interface
         self._sequence = 0
+        self.gripper_calibration = gripper_calibration
 
     @property
     def latest(self) -> dict[str, object] | None:
@@ -148,6 +151,7 @@ class ArmAcquisitionWorker:
                         estimate,
                         self._sequence,
                         firmware_override=self.config.firmware_override,
+                        gripper_calibration=self.gripper_calibration,
                     )
                     with self._lock:
                         self._latest = event

@@ -133,6 +133,29 @@ canvas { display: block; width: 100%; height: 100%; }
 .mini-card header em { color: var(--muted); font: normal 8px var(--mono); }
 .mini-card canvas { height: 109px; }
 
+.gripper-card { min-height: 222px; margin-top: 10px; }
+.gripper-card::before { background: var(--cyan); }
+.gripper-state { padding: 5px 8px; border: 1px solid var(--line); color: var(--muted); font: 9px var(--mono); letter-spacing: .07em; }
+.gripper-state[data-state="valid"] { color: var(--cyan); border-color: rgba(85,216,208,.45); }
+.gripper-state[data-state="uncalibrated"] { color: var(--amber); border-color: rgba(240,187,82,.45); }
+.gripper-state[data-state="invalid"] { color: var(--danger); border-color: rgba(255,79,94,.45); }
+.gripper-layout { display: grid; grid-template-columns: 360px minmax(0, 1fr); min-height: 156px; }
+.gripper-readout { display: grid; grid-template-columns: repeat(3, 1fr); border-right: 1px solid var(--line-soft); }
+.gripper-readout > div { padding: 17px 13px; border-right: 1px solid var(--line-soft); }
+.gripper-readout > div:last-child { border-right: 0; }
+.gripper-readout small { display: block; min-height: 25px; color: var(--muted); font: 8px/1.4 var(--mono); letter-spacing: .06em; }
+.gripper-readout strong { display: inline-block; margin-top: 10px; font: 600 21px var(--mono); }
+.gripper-readout span { margin-left: 4px; color: var(--muted); font: 8px var(--mono); }
+.gripper-readout em { display: block; margin-top: 10px; color: var(--amber); font: normal 8px var(--mono); }
+.gripper-traces { display: grid; grid-template-columns: 1fr 1fr; min-width: 0; background: #181d20; }
+.gripper-traces > div { min-width: 0; border-right: 1px solid var(--line-soft); }
+.gripper-traces > div:last-child { border-right: 0; }
+.gripper-traces header { height: 34px; padding: 7px 10px; display: grid; grid-template-columns: 28px 1fr auto; border-bottom: 1px solid var(--line-soft); }
+.gripper-traces header span { color: var(--cyan); font: 600 12px var(--mono); }
+.gripper-traces header strong { font: 600 10px var(--display); }
+.gripper-traces header em { color: var(--muted); font: normal 8px var(--mono); }
+.gripper-traces canvas { height: 122px; }
+
 .diagnostic-column { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .correlation-card { min-height: 303px; padding: 16px; }
 .correlation-card h2 span { color: var(--amber); font: 9px var(--mono); border: 1px solid rgba(240,187,82,.4); padding: 3px 5px; vertical-align: 3px; }
@@ -208,6 +231,7 @@ footer span:last-child { text-align: right; }
   .segment { padding-inline: 8px; }
   .trace-legend { gap: 7px; }
   .scope-readout strong { font-size: 18px; }
+  .gripper-layout { grid-template-columns: 320px minmax(0, 1fr); }
 }
 
 @media (prefers-reduced-motion: reduce) {

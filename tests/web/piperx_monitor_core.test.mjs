@@ -6,6 +6,8 @@ import {
   RingBuffer,
   driverAlarms,
   estimateDisplayState,
+  gripperAlarms,
+  gripperPresentation,
   medianFinite,
   pearsonCorrelation,
   sampleAgeState,
@@ -121,4 +123,30 @@ test('driverAlarms reports official Piper status and stale telemetry', () => {
 test('medianFinite stabilizes instantaneous rate outliers', () => {
   assert.equal(medianFinite([200, 157, null, 201, 199]), 199.5);
   assert.equal(medianFinite([null, Number.NaN]), null);
+});
+
+
+test('gripperPresentation distinguishes calibrated raw and unavailable force', () => {
+  assert.deepEqual(
+    gripperPresentation({
+      available: true, fresh: true, feedback_torque_nm: -0.25,
+      travel_mm: 30, force_n: 12.5, force_valid: true, force_calibrated: true,
+      enabled: true, homed: true,
+    }),
+    { state: 'valid', torqueNm: -0.25, travelMm: 30, forceN: 12.5, reason: null },
+  );
+  assert.equal(gripperPresentation({
+    available: true, fresh: true, feedback_torque_nm: -0.2,
+    travel_mm: 35, force_n: null, force_valid: false,
+    force_calibrated: false, force_reason: 'uncalibrated', enabled: true,
+  }).state, 'uncalibrated');
+  assert.equal(gripperPresentation({ available: false }).state, 'unavailable');
+});
+
+
+test('gripperAlarms reports stale feedback faults and uncalibrated force', () => {
+  assert.deepEqual(gripperAlarms({
+    available: true, fresh: false, enabled: true, low_voltage: true,
+    driver_error: true, force_calibrated: false,
+  }), ['夹爪遥测过期', '夹爪欠压', '夹爪驱动错误', '夹爪力未标定']);
 });

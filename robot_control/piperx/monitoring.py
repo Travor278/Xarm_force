@@ -13,10 +13,11 @@ from typing import Any
 import numpy as np
 
 from .estimator import Estimate
-from .socketcan import DriverTelemetry, PiperState
+from .gripper_force import GripperForceCalibration, GripperForceMismatchError
+from .socketcan import DriverTelemetry, GripperTelemetry, PiperState
 
 
-SCHEMA_VERSION = "piperx-monitor-v1"
+SCHEMA_VERSION = "piperx-monitor-v2"
 _FIRMWARE_PATTERN = re.compile(r"^S-V(\d+)\.(\d+)-(\d+)$")
 
 
@@ -80,6 +81,68 @@ def _driver_payload(
     }
 
 
+def _gripper_payload(
+    gripper: GripperTelemetry | None,
+    fresh: bool,
+    adapter_serial: str,
+    calibration: GripperForceCalibration | None,
+) -> dict[str, object]:
+    if gripper is None:
+        return {
+            "available": False,
+            "fresh": False,
+            "travel_mm": None,
+            "feedback_torque_nm": None,
+            "status_code": None,
+            "enabled": False,
+            "homed": False,
+            "low_voltage": False,
+            "motor_overheat": False,
+            "driver_overcurrent": False,
+            "driver_overheat": False,
+            "sensor_abnormal": False,
+            "driver_error": False,
+            "force_n": None,
+            "force_valid": False,
+            "force_calibrated": calibration is not None,
+            "force_reason": "unavailable",
+        }
+    status = gripper.status_code
+    force_n: float | None = None
+    force_valid = False
+    force_reason: str | None = "uncalibrated"
+    if calibration is not None:
+        try:
+            prediction = calibration.predict(
+                gripper, fresh=fresh, adapter_serial=adapter_serial
+            )
+            force_n = prediction.force_n
+            force_valid = prediction.valid
+            force_reason = prediction.reason
+        except GripperForceMismatchError:
+            force_reason = "calibration_mismatch"
+    return {
+        "available": True,
+        "fresh": bool(fresh),
+        "timestamp_ns": int(gripper.timestamp_ns),
+        "travel_mm": _finite_scalar(gripper.travel_mm),
+        "feedback_torque_nm": _finite_scalar(gripper.torque_nm),
+        "status_code": int(status),
+        "low_voltage": bool(status & (1 << 0)),
+        "motor_overheat": bool(status & (1 << 1)),
+        "driver_overcurrent": bool(status & (1 << 2)),
+        "driver_overheat": bool(status & (1 << 3)),
+        "sensor_abnormal": bool(status & (1 << 4)),
+        "driver_error": bool(status & (1 << 5)),
+        "enabled": bool(status & (1 << 6)),
+        "homed": bool(status & (1 << 7)),
+        "force_n": _finite_scalar(force_n),
+        "force_valid": bool(force_valid),
+        "force_calibrated": calibration is not None,
+        "force_reason": force_reason,
+    }
+
+
 def serialize_snapshot(
     arm_name: str,
     state: PiperState,
@@ -87,6 +150,7 @@ def serialize_snapshot(
     sequence: int,
     *,
     firmware_override: str | None = None,
+    gripper_calibration: GripperForceCalibration | None = None,
 ) -> dict[str, object]:
     """Convert one matched state/estimate pair to strict JSON-compatible data."""
     version = firmware_override or state.firmware
@@ -127,6 +191,12 @@ def serialize_snapshot(
             _driver_payload(driver, fresh)
             for driver, fresh in zip(state.driver, state.driver_fresh, strict=True)
         ],
+        "gripper": _gripper_payload(
+            state.gripper,
+            state.gripper_fresh,
+            state.adapter_serial,
+            gripper_calibration,
+        ),
         "firmware": {
             "version": firmware.version,
             "status": firmware.status,

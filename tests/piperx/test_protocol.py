@@ -5,10 +5,12 @@ import pytest
 from robot_control.piperx.protocol import (
     FirmwareFragment,
     FrameDecodeError,
+    GripperSample,
     HighSpeedSample,
     JointCommandPair,
     LowSpeedSample,
     decode_frame,
+    decode_gripper,
     decode_high_speed,
     decode_joint_command,
     decode_low_speed,
@@ -70,6 +72,24 @@ def test_joint_command_converts_signed_millidegrees_to_radians():
     )
 
 
+def test_gripper_feedback_decodes_signed_travel_torque_and_status():
+    sample = decode_gripper(0x2A8, bytes.fromhex("ffffcfc7007b C100".replace(" ", "")))
+
+    assert sample == GripperSample(
+        travel_mm=-12.345,
+        torque_nm=0.123,
+        status_code=0xC1,
+    )
+
+
+def test_decode_frame_routes_gripper_feedback():
+    assert decode_frame(0x2A8, bytes.fromhex("00011170ff060000")) == GripperSample(
+        travel_mm=70.0,
+        torque_nm=-0.25,
+        status_code=0,
+    )
+
+
 def test_decode_frame_preserves_passive_firmware_fragment():
     assert decode_frame(0x4AF, b"S-V1.8-2") == FirmwareFragment(b"S-V1.8-2")
 
@@ -78,7 +98,7 @@ def test_decode_frame_ignores_unknown_identifier():
     assert decode_frame(0x123, bytes(8)) is None
 
 
-@pytest.mark.parametrize("can_id", [0x2A5, 0x251, 0x261, 0x155, 0x4AF])
+@pytest.mark.parametrize("can_id", [0x2A5, 0x251, 0x261, 0x155, 0x2A8, 0x4AF])
 def test_recognized_frame_rejects_short_payload(can_id):
     with pytest.raises(FrameDecodeError, match="8 bytes"):
         decode_frame(can_id, bytes(7))
@@ -96,3 +116,6 @@ def test_specific_decoder_rejects_wrong_identifier_family():
 
     with pytest.raises(FrameDecodeError, match="joint-command"):
         decode_joint_command(0x2A5, bytes(8))
+
+    with pytest.raises(FrameDecodeError, match="gripper"):
+        decode_gripper(0x2A5, bytes(8))

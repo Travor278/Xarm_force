@@ -147,7 +147,7 @@ class _WebWorker:
 
     @property
     def latest(self):
-        return {"schema": "piperx-monitor-v1", "arm": self.name, "sequence": 4}
+        return {"schema": "piperx-monitor-v2", "arm": self.name, "sequence": 4}
 
     def start(self):
         self.started = True

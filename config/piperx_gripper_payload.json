@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "name": "piper-standard-parallel-gripper",
+  "parent_joint": "joint6",
+  "reference_opening_m": 0.035,
+  "mass_kg": 0.5,
+  "com_m": [
+    -0.000165426446012032,
+    0.000072452984002012,
+    0.03759000340047896
+  ],
+  "inertia_kg_m2": [
+    [0.00124729527, 0.000000807076677, -0.00000783048387],
+    [0.000000807076677, 0.000997374239, 0.00000024730159],
+    [-0.00000783048387, 0.00000024730159, 0.000447116481]
+  ],
+  "source": {
+    "repository": "https://github.com/agilexrobotics/piper_ros.git",
+    "commit": "ac41fcbcdda598f01b51cf6175ed9a24d0dacadc",
+    "path": "src/piper_description/urdf/piper_description.urdf"
+  }
+}

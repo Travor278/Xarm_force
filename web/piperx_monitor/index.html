@@ -105,6 +105,24 @@
         <article class="mini-card panel"><header><span>I</span><strong>关节电流</strong><em>A</em></header><canvas id="currentCanvas"></canvas></article>
         <article class="mini-card panel"><header><span>ΔQ</span><strong>跟踪误差</strong><em>deg</em></header><canvas id="trackingCanvas"></canvas></article>
       </section>
+
+      <article class="gripper-card panel" aria-labelledby="gripperTitle">
+        <div class="panel-heading compact">
+          <div><p class="kicker">GRIPPER 0x2A8 / FEEDBACK TORQUE</p><h2 id="gripperTitle">夹爪力反馈</h2></div>
+          <span class="gripper-state" id="gripperState" data-state="unavailable">等待夹爪遥测</span>
+        </div>
+        <div class="gripper-layout">
+          <div class="gripper-readout">
+            <div><small>OPENING / 行程</small><strong id="gripperTravelNow">--</strong><span>mm</span></div>
+            <div><small>MOTOR TORQUE / 反馈</small><strong id="gripperTorqueNow">--</strong><span>N·m</span></div>
+            <div><small>FINGERTIP FORCE / 夹持力</small><strong id="gripperForceNow">--</strong><span>N</span><em id="gripperForceReason">未标定</em></div>
+          </div>
+          <div class="gripper-traces">
+            <div><header><span>τG</span><strong>夹爪反馈力矩</strong><em>N·m</em></header><canvas id="gripperTorqueCanvas"></canvas></div>
+            <div><header><span>FG</span><strong>标定指尖力</strong><em>N</em></header><canvas id="gripperForceCanvas"></canvas></div>
+          </div>
+        </div>
+      </article>
     </section>
 
     <aside class="diagnostic-column">
@@ -154,7 +172,7 @@
   </main>
 
   <footer>
-    <span>PIPER-X FORCE TRACE / SCHEMA piperx-monitor-v1</span>
+    <span>PIPER-X FORCE TRACE / SCHEMA piperx-monitor-v2</span>
     <strong>测量提示：绝对精度必须使用独立六维力传感器或标定载荷验收</strong>
     <span id="clock">--:--:--</span>
   </footer>

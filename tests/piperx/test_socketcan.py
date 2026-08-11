@@ -189,6 +189,7 @@ def test_auxiliary_feedback_enriches_state_without_blocking_emission():
     assembler.update(0x156, _position_payload(3000, 4000), 3)
     assembler.update(0x157, _position_payload(5000, 6000), 4)
     assembler.update(0x4AF, b"S-V1.8-2", 5)
+    assembler.update(0x2A8, bytes.fromhex("000088b8007bc100"), 6)
 
     state = _feed_complete_cycle(assembler, 10)
 
@@ -207,6 +208,11 @@ def test_auxiliary_feedback_enriches_state_without_blocking_emission():
     )
     assert state.command_fresh
     assert state.firmware == "S-V1.8-2"
+    assert state.gripper is not None
+    assert state.gripper.travel_mm == pytest.approx(35.0)
+    assert state.gripper.torque_nm == pytest.approx(0.123)
+    assert state.gripper.status_code == 0xC1
+    assert state.gripper_fresh
 
 
 def test_slow_auxiliary_feedback_becomes_stale_without_blocking_next_state():
@@ -236,6 +242,21 @@ def test_missing_auxiliary_feedback_is_explicitly_unavailable():
     assert state.q_command_rad is None
     assert not state.command_fresh
     assert state.firmware is None
+    assert state.gripper is None
+    assert not state.gripper_fresh
+
+
+def test_stale_gripper_feedback_does_not_block_arm_state():
+    assembler = PiperStateAssembler(
+        "can2", "serial-left", max_skew_ns=20, auxiliary_stale_after_ns=50
+    )
+    assembler.update(0x2A8, bytes.fromhex("000088b8007b4000"), 1)
+
+    state = _feed_complete_cycle(assembler, 100)
+
+    assert state is not None
+    assert state.gripper is not None
+    assert not state.gripper_fresh
 
 
 def test_assembler_reports_windowed_rate_instead_of_last_interval_jitter():
