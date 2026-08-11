@@ -2,6 +2,7 @@ import {
   RingBuffer,
   driverAlarms,
   estimateDisplayState,
+  externalTracePresentation,
   medianFinite,
   pearsonCorrelation,
   sampleAgeState,
@@ -10,7 +11,6 @@ import {
 
 const COLORS = {
   external: '#55d8d0', effort: '#ff6b4a', model: '#f0bb52',
-  extrapolated: '#f0bb52',
   position: '#5e91d8', velocity: '#c6dc72', current: '#ff6b4a', tracking: '#b77bd7',
   grid: '#2d3539', text: '#748084', zero: '#465156',
 };
@@ -180,21 +180,16 @@ function tracePoints(samples, field, scale = 1, requireEstimate = false) {
 
 function drawAllCharts() {
   const samples = visibleSamples();
-  const estimateSamples = samples.filter(
-    (sample) => estimateDisplayState(sample) !== 'unavailable',
-  );
-  const extrapolatedOnly = estimateSamples.length > 0 && estimateSamples.every(
-    (sample) => estimateDisplayState(sample) === 'extrapolated',
-  );
+  const externalPresentation = externalTracePresentation(samples);
   const traceEnabled = Object.fromEntries($$('[data-trace]').map((input) => [input.dataset.trace, input.checked]));
   drawChart(canvases.torque, [
     {
       points: tracePoints(samples, 'tau_external_nm', 1, true),
-      color: extrapolatedOnly ? COLORS.extrapolated : COLORS.external,
+      color: COLORS[externalPresentation.colorKey],
       visible: traceEnabled.external,
       width: 2.1,
-      glow: extrapolatedOnly ? 1 : 3,
-      dash: extrapolatedOnly ? [7, 5] : [],
+      glow: externalPresentation.glow,
+      dash: externalPresentation.dash,
     },
     { points: tracePoints(samples, 'tau_effort_nm'), color: COLORS.effort, visible: traceEnabled.effort },
     { points: tracePoints(samples, 'tau_model_nm'), color: COLORS.model, visible: traceEnabled.model },

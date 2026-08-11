@@ -69,6 +69,21 @@ export function estimateDisplayState(sample) {
 }
 
 
+export function externalTracePresentation(samples) {
+  const displayable = samples.filter(
+    (sample) => estimateDisplayState(sample) !== 'unavailable',
+  );
+  const extrapolatedOnly = displayable.length > 0 && displayable.every(
+    (sample) => estimateDisplayState(sample) === 'extrapolated',
+  );
+  return {
+    colorKey: 'external',
+    dash: extrapolatedOnly ? [7, 5] : [],
+    glow: extrapolatedOnly ? 1 : 3,
+  };
+}
+
+
 export function traceSegments(points) {
   const segments = [];
   let segment = [];

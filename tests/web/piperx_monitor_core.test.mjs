@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as monitorCore from '../../web/piperx_monitor/monitor-core.js';
 
 import {
   RingBuffer,
@@ -10,6 +11,21 @@ import {
   sampleAgeState,
   traceSegments,
 } from '../../web/piperx_monitor/monitor-core.js';
+
+
+test('extrapolated external torque keeps its cyan trace identity', () => {
+  assert.equal(typeof monitorCore.externalTracePresentation, 'function');
+  assert.deepEqual(
+    monitorCore.externalTracePresentation([
+      {
+        valid: false,
+        reason: 'outside_calibrated_workspace',
+        tau_external_nm: [0.25],
+      },
+    ]),
+    { colorKey: 'external', dash: [7, 5], glow: 1 },
+  );
+});
 
 
 test('estimateDisplayState separates valid extrapolated and unavailable samples', () => {
