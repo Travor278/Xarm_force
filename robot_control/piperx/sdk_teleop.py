@@ -288,7 +288,7 @@ class StandaloneTeleopCoordinator:
         speed_ratio: int = 10,
         gripper_effort: int = 1000,
         hold_after_ms: float = 250.0,
-        fail_after_ms: float = 1000.0,
+        fail_after_ms: float = 3000.0,
     ) -> None:
         validate_pair_configs(pair_configs)
         if not 1 <= speed_ratio <= 100:

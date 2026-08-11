@@ -367,7 +367,14 @@ def test_coordinator_watchdog_holds_then_fails_without_disabling(tmp_path: Path)
     held_joint_commands = sum(call[0] == "JointCtrl" for call in sdks["can2"].calls)
     assert held_joint_commands == initial_joint_commands
 
-    now[0] += 701_000_000
+    now[0] += 1_700_000_000
+    coordinator.step()
+    paused_joint_commands = sum(
+        call[0] == "JointCtrl" for call in sdks["can2"].calls
+    )
+    assert paused_joint_commands == initial_joint_commands
+
+    now[0] += 1_001_000_000
     with pytest.raises(TeleopSafetyError, match="leader liveness timeout"):
         coordinator.step()
     assert not any(call[0] == "DisableArm" for call in sdks["can2"].calls)
