@@ -153,6 +153,10 @@ class LatestEventHub:
         with self._lock:
             return len(self._subscribers)
 
+    @property
+    def queue_size(self) -> int:
+        return self._queue_size
+
     def subscribe(self) -> queue.Queue[dict[str, object]]:
         subscriber: queue.Queue[dict[str, object]] = queue.Queue(self._queue_size)
         with self._lock:

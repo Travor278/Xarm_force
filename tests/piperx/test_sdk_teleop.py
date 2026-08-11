@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+import threading
+import time
 from types import SimpleNamespace as NS
 
+import numpy as np
 import pytest
 
+from robot_control.piperx.estimator import Estimate
+from robot_control.piperx.monitoring import LatestEventHub
 from robot_control.piperx.sdk_teleop import (
     ArmIdentity,
+    StandaloneTeleopCoordinator,
+    StandaloneTeleopRuntime,
     TeleopPairConfig,
     TeleopSafetyError,
     follower_state,
@@ -160,3 +167,204 @@ def test_firmware_and_four_arm_identity_gates(tmp_path: Path):
     with pytest.raises(TeleopSafetyError, match="four distinct"):
         validate_pair_configs((left, duplicate))
 
+
+class FullFakeSdk(FakeSdk):
+    def __init__(self, interface: str, *, operator: bool):
+        super().__init__()
+        self.interface = interface
+        self.operator = operator
+        self.calls: list[tuple] = []
+        self.firmware = "S-V1.8-9"
+        self.gripper = NS(
+            time_stamp=13.0,
+            Hz=100.0,
+            gripper_state=NS(grippers_angle=30_000),
+        )
+        self.auto_advance = False
+
+    def ConnectPort(self, **kwargs):
+        self.calls.append(("ConnectPort", kwargs))
+
+    def DisconnectPort(self):
+        self.calls.append(("DisconnectPort",))
+
+    def SearchPiperFirmwareVersion(self):
+        self.calls.append(("SearchPiperFirmwareVersion",))
+
+    def GetPiperFirmwareVersion(self):
+        return self.firmware
+
+    def MasterSlaveConfig(self, *args):
+        self.calls.append(("MasterSlaveConfig", *args))
+
+    def ModeCtrl(self, *args):
+        self.calls.append(("ModeCtrl", *args))
+
+    def EnableArm(self, *args):
+        self.calls.append(("EnableArm", *args))
+        return True
+
+    def JointCtrl(self, *args):
+        self.calls.append(("JointCtrl", *args))
+
+    def GripperCtrl(self, *args):
+        self.calls.append(("GripperCtrl", *args))
+
+    def GetArmGripperMsgs(self):
+        return self.gripper
+
+    def GetArmJointCtrl(self):
+        if self.auto_advance:
+            self.joint_ctrl.time_stamp += 0.005
+        return super().GetArmJointCtrl()
+
+
+def _pair_configs(tmp_path: Path):
+    return (
+        TeleopPairConfig(
+            "left",
+            ArmIdentity("left-leader", "serial-0", "leader", "can0"),
+            ArmIdentity("left-follower", "serial-2", "follower", "can2"),
+            tmp_path / "left.json",
+        ),
+        TeleopPairConfig(
+            "right",
+            ArmIdentity("right-leader", "serial-1", "leader", "can1"),
+            ArmIdentity("right-follower", "serial-3", "follower", "can3"),
+            tmp_path / "right.json",
+        ),
+    )
+
+
+def _sdk_fixture():
+    return {
+        "can0": FullFakeSdk("can0", operator=True),
+        "can1": FullFakeSdk("can1", operator=True),
+        "can2": FullFakeSdk("can2", operator=False),
+        "can3": FullFakeSdk("can3", operator=False),
+    }
+
+
+def test_coordinator_owns_each_sdk_once_and_shares_follower_feedback(tmp_path: Path):
+    sdks = _sdk_fixture()
+    factory_calls = []
+
+    def factory(interface, *, judge_flag, can_auto_init):
+        factory_calls.append((interface, judge_flag, can_auto_init))
+        return sdks[interface]
+
+    coordinator = StandaloneTeleopCoordinator(
+        _pair_configs(tmp_path),
+        sdk_factory=factory,
+        clock_ns=time.monotonic_ns,
+        sleeper=lambda _duration: None,
+    )
+
+    coordinator.connect()
+    sdks["can0"].joint_ctrl.time_stamp += 0.005
+    sdks["can1"].joint_ctrl.time_stamp += 0.005
+    states = coordinator.step()
+    coordinator.close()
+
+    assert sorted(factory_calls) == [
+        ("can0", True, True),
+        ("can1", True, True),
+        ("can2", True, True),
+        ("can3", True, True),
+    ]
+    for sdk in sdks.values():
+        assert ("ConnectPort", {"piper_init": False}) in sdk.calls
+        assert sdk.calls[-1] == ("DisconnectPort",)
+        assert sdk.calls.count(("SearchPiperFirmwareVersion",)) == 1
+    assert ("MasterSlaveConfig", 0xFA, 0, 0, 0) in sdks["can0"].calls
+    assert ("MasterSlaveConfig", 0xFC, 0, 0, 0) in sdks["can2"].calls
+    assert ("ModeCtrl", 1, 1, 10, 0xAD) in sdks["can2"].calls
+    assert ("EnableArm", 7, 0x02) in sdks["can2"].calls
+    assert ("JointCtrl", 1000, -2000, 3000, -4000, 5000, -6000) in sdks["can2"].calls
+    assert ("GripperCtrl", 30_000, 1000, 0x01, 0) in sdks["can2"].calls
+    assert states["left"].interface == "can2"
+    assert states["left"].current_a == pytest.approx((-0.1,) * 6)
+
+
+def test_coordinator_watchdog_holds_then_fails_without_disabling(tmp_path: Path):
+    sdks = _sdk_fixture()
+    now = [1_000_000_000]
+    coordinator = StandaloneTeleopCoordinator(
+        _pair_configs(tmp_path),
+        sdk_factory=lambda interface, **_kwargs: sdks[interface],
+        clock_ns=lambda: now[0],
+        sleeper=lambda _duration: None,
+    )
+    coordinator.connect()
+    initial_joint_commands = sum(
+        call[0] == "JointCtrl" for call in sdks["can2"].calls
+    )
+
+    now[0] += 300_000_000
+    coordinator.step()
+    held_joint_commands = sum(call[0] == "JointCtrl" for call in sdks["can2"].calls)
+    assert held_joint_commands == initial_joint_commands
+
+    now[0] += 701_000_000
+    with pytest.raises(TeleopSafetyError, match="leader command timeout"):
+        coordinator.step()
+    assert not any(call[0] == "DisableArm" for call in sdks["can2"].calls)
+    coordinator.close()
+
+
+class ZeroEstimator:
+    def estimate(self, state):
+        zeros = np.zeros(6)
+        return Estimate(
+            interface=state.interface,
+            adapter_serial=state.adapter_serial,
+            timestamp_ns=state.timestamp_ns,
+            q_rad=np.asarray(state.q_rad),
+            qd_filtered_rad_s=np.asarray(state.qd_rad_s),
+            qdd_rad_s2=zeros,
+            tau_measured_nm=np.asarray(state.tau_measured_nm),
+            tau_model_nm=zeros,
+            tau_bias_nm=zeros,
+            tau_external_nm=-np.asarray(state.tau_measured_nm),
+            valid=True,
+            calibrated=True,
+            reason=None,
+        )
+
+
+def test_runtime_publishes_two_arms_and_propagates_clean_stop(tmp_path: Path):
+    sdks = _sdk_fixture()
+    sdks["can0"].auto_advance = True
+    sdks["can1"].auto_advance = True
+    with pytest.raises(ValueError, match="event queue"):
+        StandaloneTeleopRuntime(
+            _pair_configs(tmp_path),
+            estimators={"left": ZeroEstimator(), "right": ZeroEstimator()},
+            hub=LatestEventHub(queue_size=1),
+            sdk_factory=lambda interface, **_kwargs: sdks[interface],
+        )
+
+    hub = LatestEventHub(queue_size=2)
+    subscriber = hub.subscribe()
+    runtime = StandaloneTeleopRuntime(
+        _pair_configs(tmp_path),
+        estimators={"left": ZeroEstimator(), "right": ZeroEstimator()},
+        hub=hub,
+        sdk_factory=lambda interface, **_kwargs: sdks[interface],
+        control_rate_hz=200.0,
+        ui_rate_hz=25.0,
+    )
+
+    runtime.start()
+    seen = {subscriber.get(timeout=1.0)["arm"] for _ in range(2)}
+    for _ in range(100):
+        if runtime.healthy():
+            break
+        threading.Event().wait(0.005)
+    runtime.stop()
+
+    assert seen == {"left", "right"}
+    assert runtime.status()["mode"] == "standalone_teleop"
+    assert set(runtime.snapshot()["arms"]) == {"left", "right"}
+    assert not runtime.healthy()
+    assert all(sdk.calls[-1] == ("DisconnectPort",) for sdk in sdks.values())

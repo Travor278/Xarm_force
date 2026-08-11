@@ -6,9 +6,14 @@ from dataclasses import dataclass
 import math
 from pathlib import Path
 import re
-from typing import Literal, Sequence
+import threading
+import time
+from typing import Callable, Literal, Mapping, Protocol, Sequence
 
+from .estimator import Estimate
+from .monitoring import SCHEMA_VERSION, LatestEventHub, serialize_snapshot
 from .socketcan import DriverTelemetry, PiperState
+from .socketcan import discover_interface
 
 
 class TeleopSafetyError(RuntimeError):
@@ -199,3 +204,417 @@ def validate_pair_configs(configs: Sequence[TeleopPairConfig]) -> None:
     if len({identity.serial for identity in identities}) != 4:
         raise TeleopSafetyError("standalone teleop requires four distinct USB-CAN adapters")
 
+
+class _Estimator(Protocol):
+    def estimate(self, state: PiperState) -> Estimate: ...
+
+
+@dataclass
+class _Endpoint:
+    identity: ArmIdentity
+    interface: str
+    sdk: object
+    firmware: str | None = None
+
+
+@dataclass
+class _PairSession:
+    config: TeleopPairConfig
+    leader: _Endpoint
+    follower: _Endpoint
+    target: OperatorTarget
+    last_sdk_timestamp_s: float
+    last_command_ns: int
+
+
+def _feedback_pose(interface: object) -> tuple[tuple[float, ...], tuple[int, ...], float]:
+    joint_message = interface.GetArmJointMsgs()
+    gripper_message = interface.GetArmGripperMsgs()
+    if float(joint_message.Hz) <= 0 or float(gripper_message.Hz) <= 0:
+        raise TeleopSafetyError("Piper feedback is not live")
+    joint_mdeg = tuple(
+        int(value) for value in _six_fields(joint_message.joint_state, "joint")
+    )
+    q_rad = _finite(
+        tuple(math.radians(value / 1000.0) for value in joint_mdeg),
+        "Piper feedback position",
+    )
+    gripper_mm = abs(float(gripper_message.gripper_state.grippers_angle)) * 0.001
+    if not math.isfinite(gripper_mm):
+        raise TeleopSafetyError("Piper gripper feedback is not finite")
+    return q_rad, joint_mdeg, gripper_mm
+
+
+def _target_from_feedback(
+    q_rad: tuple[float, ...],
+    joint_mdeg: tuple[int, ...],
+    gripper_mm: float,
+    timestamp_s: float,
+) -> OperatorTarget:
+    return OperatorTarget(
+        timestamp_s=timestamp_s,
+        frequency_hz=1.0,
+        joint_mdeg=joint_mdeg,
+        q_rad=q_rad,
+        gripper_um=int(round(gripper_mm * 1000.0)),
+        gripper_mm=gripper_mm,
+    )
+
+
+def _command_follower(interface: object, target: OperatorTarget, effort: int) -> None:
+    interface.JointCtrl(*target.joint_mdeg)
+    interface.GripperCtrl(target.gripper_um, effort, 0x01, 0)
+
+
+def _default_sdk_factory(interface: str, *, judge_flag: bool, can_auto_init: bool):
+    try:
+        from piper_sdk import C_PiperInterface_V2
+    except ImportError as error:
+        raise TeleopSafetyError("piper_sdk is required for standalone teleop") from error
+    return C_PiperInterface_V2(
+        interface,
+        judge_flag=judge_flag,
+        can_auto_init=can_auto_init,
+    )
+
+
+class StandaloneTeleopCoordinator:
+    """Own four SDK interfaces and tee follower feedback into the estimator path."""
+
+    def __init__(
+        self,
+        pair_configs: Sequence[TeleopPairConfig],
+        *,
+        sdk_factory: Callable[..., object] = _default_sdk_factory,
+        interface_resolver: Callable[[str], str] = discover_interface,
+        clock_ns: Callable[[], int] = time.monotonic_ns,
+        sleeper: Callable[[float], None] = time.sleep,
+        speed_ratio: int = 10,
+        gripper_effort: int = 1000,
+        hold_after_ms: float = 250.0,
+        fail_after_ms: float = 1000.0,
+    ) -> None:
+        validate_pair_configs(pair_configs)
+        if not 1 <= speed_ratio <= 100:
+            raise ValueError("speed_ratio must be in [1, 100]")
+        if not 0 <= gripper_effort <= 5000:
+            raise ValueError("gripper_effort must be in [0, 5000]")
+        if not 0 < hold_after_ms < fail_after_ms:
+            raise ValueError("watchdog thresholds must be positive and ordered")
+        self.configs = tuple(pair_configs)
+        self.sdk_factory = sdk_factory
+        self.interface_resolver = interface_resolver
+        self.clock_ns = clock_ns
+        self.sleeper = sleeper
+        self.speed_ratio = speed_ratio
+        self.gripper_effort = gripper_effort
+        self.hold_after_ns = int(hold_after_ms * 1e6)
+        self.fail_after_ns = int(fail_after_ms * 1e6)
+        self._endpoints: list[_Endpoint] = []
+        self._sessions: dict[str, _PairSession] = {}
+        self._connected = False
+
+    def _open_endpoint(self, identity: ArmIdentity) -> _Endpoint:
+        interface = identity.interface or self.interface_resolver(identity.serial)
+        sdk = self.sdk_factory(interface, judge_flag=True, can_auto_init=True)
+        endpoint = _Endpoint(
+            identity=ArmIdentity(identity.name, identity.serial, identity.role, interface),
+            interface=interface,
+            sdk=sdk,
+        )
+        self._endpoints.append(endpoint)
+        sdk.ConnectPort(piper_init=False)
+        return endpoint
+
+    def _wait_firmware(self) -> None:
+        for endpoint in self._endpoints:
+            endpoint.sdk.SearchPiperFirmwareVersion()
+        pending = list(self._endpoints)
+        for _attempt in range(300):
+            next_pending = []
+            for endpoint in pending:
+                value = endpoint.sdk.GetPiperFirmwareVersion()
+                try:
+                    version = parse_firmware_version(value)
+                except TeleopSafetyError:
+                    next_pending.append(endpoint)
+                    continue
+                if version < (1, 8, 9):
+                    raise TeleopSafetyError(
+                        f"Piper firmware {value} is below required S-V1.8-9"
+                    )
+                endpoint.firmware = str(value)
+            if not next_pending:
+                return
+            pending = next_pending
+            self.sleeper(0.01)
+        names = ", ".join(endpoint.identity.name for endpoint in pending)
+        raise TeleopSafetyError(f"timed out reading Piper firmware for {names}")
+
+    def _wait_pose(self, endpoint: _Endpoint) -> tuple[tuple[float, ...], tuple[int, ...], float]:
+        for _attempt in range(300):
+            try:
+                return _feedback_pose(endpoint.sdk)
+            except TeleopSafetyError:
+                self.sleeper(0.01)
+        raise TeleopSafetyError(
+            f"timed out waiting for feedback from {endpoint.identity.name}"
+        )
+
+    def _wait_enabled(self, endpoint: _Endpoint) -> None:
+        for attempt in range(300):
+            if attempt % 20 == 0:
+                endpoint.sdk.EnableArm(7, 0x02)
+            low = endpoint.sdk.GetArmLowSpdInfoMsgs()
+            motors = _six_fields(low, "motor")
+            if all(int(motor.foc_status_code) & 0x40 for motor in motors):
+                return
+            self.sleeper(0.01)
+        raise TeleopSafetyError(
+            f"timed out enabling all motors on {endpoint.identity.name}"
+        )
+
+    def connect(self) -> None:
+        if self._connected:
+            return
+        try:
+            pairs: list[tuple[TeleopPairConfig, _Endpoint, _Endpoint]] = []
+            for config in self.configs:
+                leader = self._open_endpoint(config.leader)
+                follower = self._open_endpoint(config.follower)
+                pairs.append((config, leader, follower))
+            interfaces = [endpoint.interface for endpoint in self._endpoints]
+            if len(set(interfaces)) != 4:
+                raise TeleopSafetyError("four arm serials resolved to duplicate CAN interfaces")
+            self._wait_firmware()
+            for _config, leader, follower in pairs:
+                leader.sdk.MasterSlaveConfig(0xFC, 0, 0, 0)
+                follower.sdk.MasterSlaveConfig(0xFC, 0, 0, 0)
+            now_ns = self.clock_ns()
+            for config, leader, follower in pairs:
+                leader_q, leader_mdeg, leader_gripper = self._wait_pose(leader)
+                follower_q, _follower_mdeg, follower_gripper = self._wait_pose(follower)
+                require_aligned(
+                    leader_q,
+                    follower_q,
+                    leader_gripper,
+                    follower_gripper,
+                )
+                target = _target_from_feedback(
+                    leader_q, leader_mdeg, leader_gripper, now_ns * 1e-9
+                )
+                leader.sdk.MasterSlaveConfig(0xFA, 0, 0, 0)
+                follower.sdk.ModeCtrl(1, 1, self.speed_ratio, 0xAD)
+                self._wait_enabled(follower)
+                _command_follower(follower.sdk, target, self.gripper_effort)
+                try:
+                    baseline_timestamp = operator_target(leader.sdk).timestamp_s
+                except TeleopSafetyError:
+                    baseline_timestamp = 0.0
+                self._sessions[config.name] = _PairSession(
+                    config=config,
+                    leader=leader,
+                    follower=follower,
+                    target=target,
+                    last_sdk_timestamp_s=baseline_timestamp,
+                    last_command_ns=now_ns,
+                )
+            self._connected = True
+        except Exception:
+            self.close()
+            raise
+
+    def step(self) -> dict[str, PiperState]:
+        if not self._connected:
+            raise TeleopSafetyError("standalone teleop is not connected")
+        now_ns = self.clock_ns()
+        states: dict[str, PiperState] = {}
+        for name, session in self._sessions.items():
+            new_target: OperatorTarget | None = None
+            try:
+                candidate = operator_target(session.leader.sdk)
+                if candidate.timestamp_s > session.last_sdk_timestamp_s:
+                    new_target = candidate
+            except TeleopSafetyError:
+                new_target = None
+            if new_target is not None:
+                session.target = new_target
+                session.last_sdk_timestamp_s = new_target.timestamp_s
+                session.last_command_ns = now_ns
+                _command_follower(
+                    session.follower.sdk, session.target, self.gripper_effort
+                )
+            else:
+                age_ns = now_ns - session.last_command_ns
+                if age_ns > self.fail_after_ns:
+                    raise TeleopSafetyError(f"{name} leader command timeout")
+                if age_ns <= self.hold_after_ns:
+                    _command_follower(
+                        session.follower.sdk, session.target, self.gripper_effort
+                    )
+            states[name] = follower_state(
+                session.follower.sdk,
+                session.follower.identity,
+                session.target,
+                now_ns,
+                firmware=session.follower.firmware,
+            )
+        return states
+
+    def close(self) -> None:
+        for endpoint in reversed(self._endpoints):
+            try:
+                endpoint.sdk.DisconnectPort()
+            except Exception:
+                pass
+        self._endpoints.clear()
+        self._sessions.clear()
+        self._connected = False
+
+
+class _ArmView:
+    def __init__(self, runtime: "StandaloneTeleopRuntime", name: str) -> None:
+        self.runtime = runtime
+        self.name = name
+
+    @property
+    def latest(self) -> dict[str, object] | None:
+        with self.runtime._lock:
+            return self.runtime._latest.get(self.name)
+
+    def status(self) -> dict[str, object]:
+        with self.runtime._lock:
+            latest = self.runtime._latest.get(self.name)
+            return {
+                "arm": self.name,
+                "running": self.runtime._running,
+                "error": self.runtime._error,
+                "sequence": self.runtime._sequences[self.name],
+                "latest_timestamp_ns": (
+                    latest.get("timestamp_ns") if latest is not None else None
+                ),
+            }
+
+
+class StandaloneTeleopRuntime:
+    """Run control and Web publication in the same failure domain."""
+
+    def __init__(
+        self,
+        pair_configs: Sequence[TeleopPairConfig],
+        *,
+        estimators: Mapping[str, _Estimator],
+        hub: LatestEventHub,
+        sdk_factory: Callable[..., object] = _default_sdk_factory,
+        interface_resolver: Callable[[str], str] = discover_interface,
+        clock_ns: Callable[[], int] = time.monotonic_ns,
+        control_rate_hz: float = 200.0,
+        ui_rate_hz: float = 25.0,
+        speed_ratio: int = 10,
+        gripper_effort: int = 1000,
+    ) -> None:
+        validate_pair_configs(pair_configs)
+        names = {config.name for config in pair_configs}
+        if set(estimators) != names:
+            raise ValueError("estimators must exactly match teleop pair names")
+        if not 1 <= control_rate_hz <= 500:
+            raise ValueError("control_rate_hz must be in [1, 500]")
+        if not 1 <= ui_rate_hz <= control_rate_hz:
+            raise ValueError("ui_rate_hz must be in [1, control_rate_hz]")
+        if hub.queue_size < len(pair_configs):
+            raise ValueError("event queue must hold one event per teleop pair")
+        self.hub = hub
+        self.estimators = dict(estimators)
+        self.clock_ns = clock_ns
+        self.control_period_ns = int(1e9 / control_rate_hz)
+        self.ui_period_ns = int(1e9 / ui_rate_hz)
+        self.coordinator = StandaloneTeleopCoordinator(
+            pair_configs,
+            sdk_factory=sdk_factory,
+            interface_resolver=interface_resolver,
+            clock_ns=clock_ns,
+            speed_ratio=speed_ratio,
+            gripper_effort=gripper_effort,
+        )
+        ordered_names = [config.name for config in pair_configs]
+        self.workers = tuple(_ArmView(self, name) for name in ordered_names)
+        self._latest: dict[str, dict[str, object]] = {}
+        self._sequences = {name: 0 for name in ordered_names}
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._running = False
+        self._error: str | None = None
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="piperx-standalone-teleop-web",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=4.0)
+
+    def _run(self) -> None:
+        with self._lock:
+            self._running = True
+            self._error = None
+        last_publish_ns: int | None = None
+        next_cycle_ns = self.clock_ns()
+        try:
+            self.coordinator.connect()
+            while not self._stop.is_set():
+                states = self.coordinator.step()
+                now_ns = self.clock_ns()
+                if (
+                    last_publish_ns is None
+                    or now_ns - last_publish_ns >= self.ui_period_ns
+                ):
+                    for name, state in states.items():
+                        estimate = self.estimators[name].estimate(state)
+                        self._sequences[name] += 1
+                        event = serialize_snapshot(
+                            name, state, estimate, self._sequences[name]
+                        )
+                        event["runtime_mode"] = "standalone_teleop"
+                        with self._lock:
+                            self._latest[name] = event
+                        self.hub.publish(event)
+                    last_publish_ns = now_ns
+                next_cycle_ns += self.control_period_ns
+                delay_s = max(0.0, (next_cycle_ns - self.clock_ns()) * 1e-9)
+                self._stop.wait(delay_s)
+        except Exception as error:
+            with self._lock:
+                self._error = f"{type(error).__name__}: {error}"
+        finally:
+            self.coordinator.close()
+            with self._lock:
+                self._running = False
+
+    def status(self) -> dict[str, object]:
+        return {
+            "schema": SCHEMA_VERSION,
+            "mode": "standalone_teleop",
+            "arms": [worker.status() for worker in self.workers],
+            "subscribers": self.hub.subscriber_count,
+        }
+
+    def snapshot(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "schema": SCHEMA_VERSION,
+                "mode": "standalone_teleop",
+                "arms": dict(self._latest),
+            }
+
+    def healthy(self) -> bool:
+        with self._lock:
+            return self._running and self._error is None and len(self._latest) == 2
