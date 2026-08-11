@@ -75,6 +75,10 @@ def test_remote_wrapper_has_exclusive_controller_and_cleanup_guards():
     assert "systemd-run" in remote
     assert "piperx-teleop-guard" in remote
     assert "kill -0" in remote
+    assert "ip link show dev" in remote
+    assert "type can bitrate 1000000" in remote
+    assert 'ip link set dev "$interface" up' in remote
+    assert 'ip link set dev "$interface" down' not in remote
     assert "/home/dell/anaconda3/envs/evo-rl/bin/python" in remote
     assert "conda run" not in combined
     assert "run_piperx_teleop_web_remote.sh" in launcher

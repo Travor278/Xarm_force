@@ -65,6 +65,13 @@ if pgrep -f '[p]iperx_torque_web.py|[p]iperx_teleop_web.py' >/dev/null; then
     exit 2
 fi
 
+for interface in can0 can1 can2 can3; do
+    if ! ip link show dev "$interface" | head -n 1 | grep -q 'state UP'; then
+        sudo -n ip link set dev "$interface" type can bitrate 1000000
+        sudo -n ip link set dev "$interface" up
+    fi
+done
+
 cd "$deployment"
 "$python_bin" scripts/piperx_teleop_web.py \
     --urdf "$urdf" \
