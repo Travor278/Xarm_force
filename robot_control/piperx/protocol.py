@@ -10,6 +10,9 @@ from typing import TypeAlias
 
 POSITION_IDS = {0x2A5: 0, 0x2A6: 2, 0x2A7: 4}
 HIGH_SPEED_IDS = {0x251 + index: index for index in range(6)}
+LOW_SPEED_IDS = {0x261 + index: index for index in range(6)}
+JOINT_COMMAND_IDS = {0x155: 0, 0x156: 2, 0x157: 4}
+FIRMWARE_ID = 0x4AF
 EFFORT_NM_PER_RAW = (
     1.18125e-3,
     1.18125e-3,
@@ -21,6 +24,7 @@ EFFORT_NM_PER_RAW = (
 
 _POSITION = struct.Struct(">ii")
 _HIGH_SPEED = struct.Struct(">hhi")
+_LOW_SPEED = struct.Struct(">HhbBH")
 
 
 class FrameDecodeError(ValueError):
@@ -31,11 +35,35 @@ class FrameDecodeError(ValueError):
 class HighSpeedSample:
     joint_index: int
     velocity_rad_s: float
+    current_a: float
     effort_nm: float
 
 
+@dataclass(frozen=True)
+class LowSpeedSample:
+    joint_index: int
+    voltage_v: float
+    foc_temp_c: int
+    motor_temp_c: int
+    status_code: int
+    bus_current_a: float
+
+
+@dataclass(frozen=True)
+class JointCommandPair:
+    first_joint: int
+    positions_rad: tuple[float, float]
+
+
+@dataclass(frozen=True)
+class FirmwareFragment:
+    data: bytes
+
+
 PositionPair: TypeAlias = tuple[int, tuple[float, float]]
-DecodedFrame: TypeAlias = PositionPair | HighSpeedSample
+DecodedFrame: TypeAlias = (
+    PositionPair | HighSpeedSample | LowSpeedSample | JointCommandPair | FirmwareFragment
+)
 
 
 def _require_payload(payload: bytes) -> None:
@@ -63,7 +91,37 @@ def decode_high_speed(can_id: int, payload: bytes) -> HighSpeedSample:
     return HighSpeedSample(
         joint_index=joint_index,
         velocity_rad_s=raw_speed * 1e-3,
+        current_a=raw_current * 1e-3,
         effort_nm=raw_current * EFFORT_NM_PER_RAW[joint_index],
+    )
+
+
+def decode_low_speed(can_id: int, payload: bytes) -> LowSpeedSample:
+    """Decode passive driver telemetry without affecting state coherence."""
+    if can_id not in LOW_SPEED_IDS:
+        raise FrameDecodeError(f"CAN identifier 0x{can_id:x} is not a low-speed frame")
+    _require_payload(payload)
+    voltage, foc_temp, motor_temp, status_code, bus_current = _LOW_SPEED.unpack(payload)
+    return LowSpeedSample(
+        joint_index=LOW_SPEED_IDS[can_id],
+        voltage_v=voltage * 0.1,
+        foc_temp_c=foc_temp,
+        motor_temp_c=motor_temp,
+        status_code=status_code,
+        bus_current_a=bus_current * 1e-3,
+    )
+
+
+def decode_joint_command(can_id: int, payload: bytes) -> JointCommandPair:
+    """Decode an observed follower joint command without transmitting."""
+    if can_id not in JOINT_COMMAND_IDS:
+        raise FrameDecodeError(f"CAN identifier 0x{can_id:x} is not a joint-command frame")
+    _require_payload(payload)
+    first, second = _POSITION.unpack(payload)
+    scale = math.pi / (180.0 * 1000.0)
+    return JointCommandPair(
+        first_joint=JOINT_COMMAND_IDS[can_id],
+        positions_rad=(first * scale, second * scale),
     )
 
 
@@ -73,4 +131,11 @@ def decode_frame(can_id: int, payload: bytes) -> DecodedFrame | None:
         return decode_position_pair(can_id, payload)
     if can_id in HIGH_SPEED_IDS:
         return decode_high_speed(can_id, payload)
+    if can_id in LOW_SPEED_IDS:
+        return decode_low_speed(can_id, payload)
+    if can_id in JOINT_COMMAND_IDS:
+        return decode_joint_command(can_id, payload)
+    if can_id == FIRMWARE_ID:
+        _require_payload(payload)
+        return FirmwareFragment(bytes(payload))
     return None
